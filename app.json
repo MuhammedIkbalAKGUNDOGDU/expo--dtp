@@ -13,7 +13,12 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSBluetoothAlwaysUsageDescription": "Bu uygulama Bluetooth cihazlarıyla iletişim kurmak için Bluetooth erişimine ihtiyaç duyar.",
+        "NSBluetoothPeripheralUsageDescription": "Bu uygulama Bluetooth cihazlarıyla iletişim kurmak için Bluetooth erişimine ihtiyaç duyar."
+      },
+      "bundleIdentifier": "com.anonymous.expocdtp"
     },
     "android": {
       "adaptiveIcon": {
@@ -21,10 +26,34 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.BLUETOOTH",
+        "android.permission.BLUETOOTH_ADMIN",
+        "android.permission.BLUETOOTH_SCAN",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.POST_NOTIFICATIONS"
+      ],
+      "package": "com.anonymous.expocdtp"
     },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#ffffff"
+        }
+      ]
+    ],
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "9b181642-46b6-4d88-98e6-0e9dc1401c16"
+      }
     }
   }
 }
