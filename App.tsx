@@ -10,6 +10,7 @@ import {
   PermissionsAndroid,
   NativeEventEmitter,
   NativeModules,
+  TextInput,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import BleManager from 'react-native-ble-manager';
@@ -43,6 +44,8 @@ export default function App() {
   const [bleAvailable, setBleAvailable] = useState(false);
   const [bleEnabled, setBleEnabled] = useState(false);
   const [currentScreen, setCurrentScreen] = useState<'home' | 'remote'>('home'); // Sayfa yönetimi
+  const [sendDataText, setSendDataText] = useState(''); // ESP32'ye gönderilecek veri
+  const [sentData, setSentData] = useState<string[]>([]); // Gönderilen veriler listesi
   const devicesRef = useRef<BluetoothDevice[]>([]); // State güncellemesi için ref
 
   useEffect(() => {
@@ -653,9 +656,74 @@ export default function App() {
         await BleManager.disconnect(connectedDevice);
         setConnectedDevice(null);
         setReceivedData([]);
+        setSentData([]);
+        setSendDataText('');
       } catch (error) {
         console.error('Bağlantı kesme hatası:', error);
       }
+    }
+  };
+
+  // ESP32'ye veri gönder
+  const sendDataToESP32 = async () => {
+    if (!connectedDevice) {
+      Alert.alert('Uyarı', 'Önce bir cihaza bağlanmalısınız');
+      return;
+    }
+
+    if (!sendDataText.trim()) {
+      Alert.alert('Uyarı', 'Lütfen gönderilecek veriyi girin');
+      return;
+    }
+
+    try {
+      const ESP32_SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
+      const ESP32_CHARACTERISTIC_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
+
+      console.log('📤 ========================================');
+      console.log('📤 === ESP32\'YE VERİ GÖNDERİLİYOR ===');
+      console.log('📤 ========================================');
+      console.log('📤 Cihaz ID:', connectedDevice);
+      console.log('📤 Servis UUID:', ESP32_SERVICE_UUID);
+      console.log('📤 Karakteristik UUID:', ESP32_CHARACTERISTIC_UUID);
+      console.log('📤 Gönderilecek veri:', sendDataText);
+      console.log('📤 Zaman:', new Date().toLocaleTimeString());
+
+      // String'i byte array'e çevir
+      const dataBytes: number[] = [];
+      for (let i = 0; i < sendDataText.length; i++) {
+        dataBytes.push(sendDataText.charCodeAt(i));
+      }
+
+      console.log('📤 Byte array:', dataBytes);
+
+      // ESP32'ye veri gönder
+      await BleManager.write(
+        connectedDevice,
+        ESP32_SERVICE_UUID,
+        ESP32_CHARACTERISTIC_UUID,
+        dataBytes
+      );
+
+      console.log('✅ Veri başarıyla gönderildi!');
+      console.log('========================================');
+
+      // Gönderilen veriyi listeye ekle
+      setSentData((prev) => [sendDataText, ...prev]);
+      
+      // Input'u temizle
+      setSendDataText('');
+
+      Alert.alert('✅ Başarılı', `Veri gönderildi: ${sendDataText}`);
+    } catch (error) {
+      console.error('❌ ========================================');
+      console.error('❌ === VERİ GÖNDERME HATASI ===');
+      console.error('❌ ========================================');
+      console.error('❌ Hata:', error);
+      console.error('❌ Hata detayı:', JSON.stringify(error, null, 2));
+      console.error('========================================');
+      
+      Alert.alert('Hata', `Veri gönderilemedi: ${error}`);
     }
   };
 
@@ -767,19 +835,55 @@ export default function App() {
 
       {connectedDevice && (
         <ScrollView style={styles.dataContainer}>
-          <Text style={styles.sectionTitle}>Alınan Veriler:</Text>
-          {receivedData.length === 0 ? (
-            <Text style={styles.emptyText}>Henüz veri alınmadı...</Text>
-          ) : (
-            receivedData.map((data, index) => (
-              <View key={index} style={styles.dataItem}>
-                <Text style={styles.dataText}>{data}</Text>
-                <Text style={styles.dataTime}>
-                  {new Date().toLocaleTimeString()}
-                </Text>
-              </View>
-            ))
+          {/* Veri Gönderme Bölümü */}
+          <View style={styles.sendDataContainer}>
+            <Text style={styles.sectionTitle}>ESP32'ye Veri Gönder:</Text>
+            <TextInput
+              style={styles.textInput}
+              placeholder="Gönderilecek veriyi yazın..."
+              value={sendDataText}
+              onChangeText={setSendDataText}
+              multiline={false}
+            />
+            <TouchableOpacity 
+              style={[styles.button, styles.sendButton]} 
+              onPress={sendDataToESP32}
+            >
+              <Text style={styles.buttonText}>📤 Veri Gönder</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Gönderilen Veriler */}
+          {sentData.length > 0 && (
+            <View style={styles.sentDataContainer}>
+              <Text style={styles.sectionTitle}>Gönderilen Veriler:</Text>
+              {sentData.map((data, index) => (
+                <View key={index} style={[styles.dataItem, styles.sentDataItem]}>
+                  <Text style={styles.dataText}>📤 {data}</Text>
+                  <Text style={styles.dataTime}>
+                    {new Date().toLocaleTimeString()}
+                  </Text>
+                </View>
+              ))}
+            </View>
           )}
+
+          {/* Alınan Veriler */}
+          <View style={styles.receivedDataContainer}>
+            <Text style={styles.sectionTitle}>Alınan Veriler:</Text>
+            {receivedData.length === 0 ? (
+              <Text style={styles.emptyText}>Henüz veri alınmadı...</Text>
+            ) : (
+              receivedData.map((data, index) => (
+                <View key={index} style={[styles.dataItem, styles.receivedDataItem]}>
+                  <Text style={styles.dataText}>📥 {data}</Text>
+                  <Text style={styles.dataTime}>
+                    {new Date().toLocaleTimeString()}
+                  </Text>
+                </View>
+              ))
+            )}
+          </View>
         </ScrollView>
       )}
     </View>
@@ -894,6 +998,36 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#999',
   },
+  sendDataContainer: {
+    backgroundColor: '#fff',
+    padding: 15,
+    marginBottom: 20,
+    borderRadius: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  textInput: {
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 16,
+    marginBottom: 15,
+    backgroundColor: '#fff',
+  },
+  sendButton: {
+    backgroundColor: '#4CAF50',
+    marginTop: 0,
+  },
+  sentDataContainer: {
+    marginBottom: 20,
+  },
+  receivedDataContainer: {
+    marginBottom: 20,
+  },
   dataItem: {
     backgroundColor: '#fff',
     padding: 15,
@@ -901,6 +1035,14 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     borderLeftWidth: 4,
     borderLeftColor: '#4CAF50',
+  },
+  sentDataItem: {
+    backgroundColor: '#e8f5e9',
+    borderLeftColor: '#4CAF50',
+  },
+  receivedDataItem: {
+    backgroundColor: '#e3f2fd',
+    borderLeftColor: '#2196F3',
   },
   dataText: {
     fontSize: 16,
