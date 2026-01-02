@@ -36,6 +36,42 @@ interface BluetoothDevice {
   advertising: any;
 }
 
+// Sensör verileri
+interface SensorData {
+  heartRate: number | null;      // BPM
+  accelX: number | null;          // m/s²
+  accelY: number | null;
+  accelZ: number | null;
+  movement: 'active' | 'idle' | 'fall' | 'unknown';
+  timestamp: number;
+  battery: number | null;         // %
+}
+
+// Alarm tipleri
+type AlarmType = 
+  | 'fall'              // Düşme tespiti
+  | 'inactivity'        // Uzun süre hareketsizlik
+  | 'low_heart_rate'    // Düşük nabız (<40)
+  | 'high_heart_rate'   // Yüksek nabız (>120)
+  | 'manual';           // Manuel alarm
+
+// Alarm verisi
+interface Alarm {
+  id: string;
+  type: AlarmType;
+  message: string;
+  timestamp: number;
+  acknowledged: boolean;
+}
+
+// Eşik değerleri
+interface Thresholds {
+  minHeartRate: number;      // 40
+  maxHeartRate: number;      // 120
+  inactivityMinutes: number; // 5
+  fallThreshold: number;     // 2.5g
+}
+
 export default function App() {
   const [isScanning, setIsScanning] = useState(false);
   const [devices, setDevices] = useState<BluetoothDevice[]>([]);
@@ -46,6 +82,27 @@ export default function App() {
   const [currentScreen, setCurrentScreen] = useState<'home' | 'remote'>('home'); // Sayfa yönetimi
   const [sendDataText, setSendDataText] = useState(''); // ESP32'ye gönderilecek veri
   const [sentData, setSentData] = useState<string[]>([]); // Gönderilen veriler listesi
+  
+  // Yeni state'ler - Güvenlik izleme sistemi
+  const [sensorData, setSensorData] = useState<SensorData>({
+    heartRate: null,
+    accelX: null,
+    accelY: null,
+    accelZ: null,
+    movement: 'unknown',
+    timestamp: Date.now(),
+    battery: null,
+  });
+  const [alarms, setAlarms] = useState<Alarm[]>([]);
+  const [thresholds, setThresholds] = useState<Thresholds>({
+    minHeartRate: 40,
+    maxHeartRate: 120,
+    inactivityMinutes: 5,
+    fallThreshold: 2.5,
+  });
+  const [lastActivityTime, setLastActivityTime] = useState<number>(Date.now());
+  const [inactivityTimer, setInactivityTimer] = useState<NodeJS.Timeout | null>(null);
+  
   const devicesRef = useRef<BluetoothDevice[]>([]); // State güncellemesi için ref
 
   useEffect(() => {
@@ -224,12 +281,29 @@ export default function App() {
             return newData;
           });
           
-          // Bildirim gönder
-          sendNotification(
-            'Bluetooth Verisi Alındı',
-            `Yeni veri: ${decodedData}`
-          );
-          console.log('🔔 Bildirim gönderildi');
+          // Sensör verilerini parse et
+          const parsedData = parseSensorData(decodedData);
+          if (parsedData) {
+            setSensorData(parsedData);
+            console.log('📊 Sensör verileri güncellendi:', parsedData);
+            
+            // Alarm tespiti yap
+            const newAlarms = detectAlarms(parsedData);
+            if (newAlarms.length > 0) {
+              setAlarms((prev) => [...newAlarms, ...prev]);
+              console.log('🚨 Yeni alarmlar tespit edildi:', newAlarms);
+              
+              // Her alarm için bildirim gönder
+              newAlarms.forEach((alarm) => {
+                sendNotification(
+                  '🚨 ACİL DURUM',
+                  alarm.message
+                );
+              });
+            }
+          }
+          
+          console.log('🔔 İşlem tamamlandı');
         } catch (error) {
           console.error('❌ Veri decode hatası:', error);
           // Hata olsa bile raw data'yı göster
@@ -289,6 +363,137 @@ export default function App() {
       Alert.alert('İzin Gerekli', 'Bildirim izinleri gerekli');
       return;
     }
+  };
+
+  // ESP32'den gelen veriyi parse et
+  const parseSensorData = (data: string): SensorData | null => {
+    try {
+      // JSON formatında veri geliyorsa
+      if (data.startsWith('{')) {
+        const parsed = JSON.parse(data);
+        return {
+          heartRate: parsed.heartRate || null,
+          accelX: parsed.accelX || null,
+          accelY: parsed.accelY || null,
+          accelZ: parsed.accelZ || null,
+          movement: parsed.movement || 'unknown',
+          timestamp: parsed.timestamp || Date.now(),
+          battery: parsed.battery || null,
+        };
+      }
+      
+      // Basit format: "ESP32'den veri: X saniye" gibi
+      // Şimdilik basit parse, sonra ESP32 kodunu güncelleyeceğiz
+      const heartRateMatch = data.match(/HR[:\s]+(\d+)/i);
+      const heartRate = heartRateMatch ? parseInt(heartRateMatch[1]) : null;
+      
+      return {
+        heartRate,
+        accelX: null,
+        accelY: null,
+        accelZ: null,
+        movement: 'active',
+        timestamp: Date.now(),
+        battery: null,
+      };
+    } catch (error) {
+      console.error('Veri parse hatası:', error);
+      return null;
+    }
+  };
+
+  // Alarm tespit fonksiyonu
+  const detectAlarms = (data: SensorData): Alarm[] => {
+    const newAlarms: Alarm[] = [];
+    const now = Date.now();
+
+    // 1. Düşme tespiti
+    if (data.movement === 'fall') {
+      newAlarms.push({
+        id: `fall_${now}`,
+        type: 'fall',
+        message: 'Düşme tespit edildi! Acil müdahale gerekebilir.',
+        timestamp: now,
+        acknowledged: false,
+      });
+    }
+
+    // 2. Anormal nabız tespiti
+    if (data.heartRate !== null) {
+      if (data.heartRate < thresholds.minHeartRate) {
+        newAlarms.push({
+          id: `low_hr_${now}`,
+          type: 'low_heart_rate',
+          message: `Düşük nabız tespit edildi: ${data.heartRate} BPM (Eşik: ${thresholds.minHeartRate} BPM)`,
+          timestamp: now,
+          acknowledged: false,
+        });
+      } else if (data.heartRate > thresholds.maxHeartRate) {
+        newAlarms.push({
+          id: `high_hr_${now}`,
+          type: 'high_heart_rate',
+          message: `Yüksek nabız tespit edildi: ${data.heartRate} BPM (Eşik: ${thresholds.maxHeartRate} BPM)`,
+          timestamp: now,
+          acknowledged: false,
+        });
+      }
+    }
+
+    // 3. Hareketsizlik tespiti (timer ile kontrol edilecek)
+    if (data.movement === 'idle') {
+      const inactivityDuration = (now - lastActivityTime) / 1000 / 60; // dakika
+      if (inactivityDuration >= thresholds.inactivityMinutes) {
+        newAlarms.push({
+          id: `inactivity_${now}`,
+          type: 'inactivity',
+          message: `Uzun süre hareketsizlik tespit edildi: ${Math.round(inactivityDuration)} dakika`,
+          timestamp: now,
+          acknowledged: false,
+        });
+      }
+    } else if (data.movement === 'active') {
+      setLastActivityTime(now);
+    }
+
+    return newAlarms;
+  };
+
+  // Manuel alarm gönder
+  const sendManualAlarm = async () => {
+    const alarm: Alarm = {
+      id: `manual_${Date.now()}`,
+      type: 'manual',
+      message: 'Manuel acil durum çağrısı gönderildi!',
+      timestamp: Date.now(),
+      acknowledged: false,
+    };
+
+    setAlarms((prev) => [alarm, ...prev]);
+    
+    // Bildirim gönder
+    await sendNotification(
+      '🚨 ACİL DURUM',
+      'Manuel acil durum çağrısı gönderildi!'
+    );
+
+    // ESP32'ye alarm sinyali gönder
+    if (connectedDevice) {
+      try {
+        const ESP32_SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
+        const ESP32_CHARACTERISTIC_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
+        const alarmData = JSON.stringify({ type: 'manual_alarm', timestamp: Date.now() });
+        const dataBytes: number[] = [];
+        for (let i = 0; i < alarmData.length; i++) {
+          dataBytes.push(alarmData.charCodeAt(i));
+        }
+        await BleManager.write(connectedDevice, ESP32_SERVICE_UUID, ESP32_CHARACTERISTIC_UUID, dataBytes);
+        console.log('✅ Manuel alarm ESP32\'ye gönderildi');
+      } catch (error) {
+        console.error('❌ Manuel alarm gönderme hatası:', error);
+      }
+    }
+
+    Alert.alert('✅ Başarılı', 'Acil durum çağrısı gönderildi!');
   };
 
   const sendNotification = async (title: string, body: string) => {
@@ -595,12 +800,12 @@ export default function App() {
                 return prev;
               });
               
-              // Bildirim gönder
-              sendNotification(
-                'Bluetooth Verisi Alındı',
-                `Yeni veri: ${decodedData}`
-              );
-              console.log('🔔 Bildirim gönderildi');
+              // Normal veri geldiğinde bildirim gönderme (sadece alarm durumlarında bildirim gönderilecek)
+              // sendNotification(
+              //   'Bluetooth Verisi Alındı',
+              //   `Yeni veri: ${decodedData}`
+              // );
+              console.log('✅ Veri işlendi (bildirim gönderilmedi - sadece alarm durumlarında bildirim gönderilir)');
             } else {
               console.log('⚠️ Veri boş veya null');
             }
@@ -755,7 +960,15 @@ export default function App() {
 
   // RemoteMonitoring sayfası
   if (currentScreen === 'remote') {
-    return <RemoteMonitoring onBack={() => setCurrentScreen('home')} />;
+    return (
+      <RemoteMonitoring 
+        onBack={() => setCurrentScreen('home')}
+        sensorData={sensorData}
+        alarms={alarms}
+        thresholds={thresholds}
+        onThresholdsChange={setThresholds}
+      />
+    );
   }
 
   return (
@@ -834,7 +1047,111 @@ export default function App() {
       )}
 
       {connectedDevice && (
-        <ScrollView style={styles.dataContainer}>
+        <ScrollView 
+          style={styles.dataContainer}
+          contentContainerStyle={styles.dataContainerContent}
+        >
+          {/* Bağlantı Durumu */}
+          <View style={styles.connectionStatusCard}>
+            <Text style={styles.connectionStatusText}>
+              ✅ Bağlı: {devices.find(d => d.id === connectedDevice)?.name || 'Cihaz'}
+            </Text>
+            <Text style={styles.connectionStatusSubtext}>
+              Sensör verileri bekleniyor...
+            </Text>
+          </View>
+
+          {/* Manuel Alarm Butonu */}
+          <View style={styles.emergencyContainer}>
+            <TouchableOpacity 
+              style={styles.emergencyButton}
+              onPress={sendManualAlarm}
+            >
+              <Text style={styles.emergencyButtonText}>🚨 ACİL DURUM</Text>
+              <Text style={styles.emergencyButtonSubtext}>Yardım Çağır</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Sensör Verileri */}
+          <View style={styles.sensorDataContainer}>
+            <Text style={styles.sectionTitle}>📊 Sensör Verileri</Text>
+            
+            {/* Kalp Atışı */}
+            <View style={styles.sensorCard}>
+              <Text style={styles.sensorLabel}>❤️ Kalp Atışı</Text>
+              <Text style={styles.sensorValue}>
+                {sensorData.heartRate !== null ? `${sensorData.heartRate} BPM` : '--'}
+              </Text>
+              {sensorData.heartRate !== null && (
+                <View style={[
+                  styles.statusBadge,
+                  sensorData.heartRate < thresholds.minHeartRate || sensorData.heartRate > thresholds.maxHeartRate
+                    ? styles.statusBadgeWarning
+                    : styles.statusBadgeOk
+                ]}>
+                  <Text style={styles.statusBadgeText}>
+                    {sensorData.heartRate < thresholds.minHeartRate ? '⚠️ Düşük' :
+                     sensorData.heartRate > thresholds.maxHeartRate ? '⚠️ Yüksek' : '✓ Normal'}
+                  </Text>
+                </View>
+              )}
+            </View>
+
+            {/* Hareket Durumu */}
+            <View style={styles.sensorCard}>
+              <Text style={styles.sensorLabel}>🏃 Hareket Durumu</Text>
+              <Text style={styles.sensorValue}>
+                {sensorData.movement === 'active' ? 'Aktif' :
+                 sensorData.movement === 'idle' ? 'Hareketsiz' :
+                 sensorData.movement === 'fall' ? '🚨 Düşme!' : 'Bilinmiyor'}
+              </Text>
+              <View style={[
+                styles.statusBadge,
+                sensorData.movement === 'fall' ? styles.statusBadgeDanger :
+                sensorData.movement === 'idle' ? styles.statusBadgeWarning :
+                styles.statusBadgeOk
+              ]}>
+                <Text style={styles.statusBadgeText}>
+                  {sensorData.movement === 'fall' ? '🚨 ACİL' :
+                   sensorData.movement === 'idle' ? '⚠️ Uyarı' : '✓ Normal'}
+                </Text>
+              </View>
+            </View>
+
+            {/* İvmeölçer */}
+            {(sensorData.accelX !== null || sensorData.accelY !== null || sensorData.accelZ !== null) && (
+              <View style={styles.sensorCard}>
+                <Text style={styles.sensorLabel}>📐 İvmeölçer</Text>
+                <View style={styles.accelContainer}>
+                  <Text style={styles.accelText}>X: {sensorData.accelX?.toFixed(2) || '--'}</Text>
+                  <Text style={styles.accelText}>Y: {sensorData.accelY?.toFixed(2) || '--'}</Text>
+                  <Text style={styles.accelText}>Z: {sensorData.accelZ?.toFixed(2) || '--'}</Text>
+                </View>
+              </View>
+            )}
+
+            {/* Son Güncelleme */}
+            <Text style={styles.lastUpdateText}>
+              Son güncelleme: {new Date(sensorData.timestamp).toLocaleTimeString()}
+            </Text>
+          </View>
+
+          {/* Aktif Alarmlar */}
+          {alarms.filter(a => !a.acknowledged).length > 0 && (
+            <View style={styles.alarmsContainer}>
+              <Text style={styles.sectionTitle}>🚨 Aktif Alarmlar</Text>
+              {alarms.filter(a => !a.acknowledged).slice(0, 3).map((alarm) => (
+                <View key={alarm.id} style={styles.alarmCard}>
+                  <Text style={styles.alarmType}>{alarm.type.toUpperCase()}</Text>
+                  <Text style={styles.alarmMessage}>{alarm.message}</Text>
+                  <Text style={styles.alarmTime}>
+                    {new Date(alarm.timestamp).toLocaleTimeString()}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          )}
+
           {/* Veri Gönderme Bölümü */}
           <View style={styles.sendDataContainer}>
             <Text style={styles.sectionTitle}>ESP32'ye Veri Gönder:</Text>
@@ -960,7 +1277,10 @@ const styles = StyleSheet.create({
   },
   dataContainer: {
     flex: 1,
+  },
+  dataContainerContent: {
     padding: 20,
+    paddingBottom: 40,
   },
   sectionTitle: {
     fontSize: 18,
@@ -1051,6 +1371,147 @@ const styles = StyleSheet.create({
   },
   dataTime: {
     fontSize: 12,
+    color: '#999',
+  },
+  // Yeni style'lar - Güvenlik izleme sistemi
+  connectionStatusCard: {
+    backgroundColor: '#e8f5e9',
+    padding: 15,
+    borderRadius: 10,
+    marginBottom: 15,
+    borderLeftWidth: 4,
+    borderLeftColor: '#4CAF50',
+  },
+  connectionStatusText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#2e7d32',
+    marginBottom: 5,
+  },
+  connectionStatusSubtext: {
+    fontSize: 12,
+    color: '#666',
+  },
+  emergencyContainer: {
+    marginBottom: 20,
+  },
+  emergencyButton: {
+    backgroundColor: '#F44336',
+    padding: 25,
+    borderRadius: 15,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  emergencyButtonText: {
+    color: '#fff',
+    fontSize: 28,
+    fontWeight: 'bold',
+    marginBottom: 5,
+  },
+  emergencyButtonSubtext: {
+    color: '#fff',
+    fontSize: 16,
+    opacity: 0.9,
+  },
+  sensorDataContainer: {
+    backgroundColor: '#fff',
+    margin: 20,
+    marginTop: 0,
+    padding: 15,
+    borderRadius: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  sensorCard: {
+    backgroundColor: '#f9f9f9',
+    padding: 15,
+    borderRadius: 8,
+    marginBottom: 12,
+    borderLeftWidth: 4,
+    borderLeftColor: '#2196F3',
+  },
+  sensorLabel: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 8,
+    fontWeight: '600',
+  },
+  sensorValue: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 8,
+  },
+  statusBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+    alignSelf: 'flex-start',
+  },
+  statusBadgeOk: {
+    backgroundColor: '#4CAF50',
+  },
+  statusBadgeWarning: {
+    backgroundColor: '#FFC107',
+  },
+  statusBadgeDanger: {
+    backgroundColor: '#F44336',
+  },
+  statusBadgeText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  accelContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginTop: 8,
+  },
+  accelText: {
+    fontSize: 14,
+    color: '#666',
+    fontWeight: '500',
+  },
+  lastUpdateText: {
+    fontSize: 12,
+    color: '#999',
+    textAlign: 'center',
+    marginTop: 10,
+    fontStyle: 'italic',
+  },
+  alarmsContainer: {
+    margin: 20,
+    marginTop: 0,
+  },
+  alarmCard: {
+    backgroundColor: '#ffebee',
+    padding: 15,
+    borderRadius: 8,
+    marginBottom: 10,
+    borderLeftWidth: 4,
+    borderLeftColor: '#F44336',
+  },
+  alarmType: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#F44336',
+    marginBottom: 5,
+    textTransform: 'uppercase',
+  },
+  alarmMessage: {
+    fontSize: 14,
+    color: '#333',
+    marginBottom: 5,
+  },
+  alarmTime: {
+    fontSize: 11,
     color: '#999',
   },
   errorContainer: {
