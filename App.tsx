@@ -17,6 +17,8 @@ import BleManager from 'react-native-ble-manager';
 import * as Notifications from 'expo-notifications';
 import * as DeviceInfo from 'expo-device';
 import RemoteMonitoring from './screens/RemoteMonitoring';
+import RemoteViewer from './screens/RemoteViewer';
+import { sendSensorDataToBackend } from './utils/api';
 
 // Bildirim handler'ı ayarla
 Notifications.setNotificationHandler({
@@ -82,6 +84,8 @@ export default function App() {
   const [currentScreen, setCurrentScreen] = useState<'home' | 'remote'>('home'); // Sayfa yönetimi
   const [sendDataText, setSendDataText] = useState(''); // ESP32'ye gönderilecek veri
   const [sentData, setSentData] = useState<string[]>([]); // Gönderilen veriler listesi
+  const [phoneMode, setPhoneMode] = useState<'phone1' | 'phone2'>('phone1'); // Telefon modu: phone1 = veri gönderen, phone2 = veri alan
+  const [backendConnected, setBackendConnected] = useState(false); // Backend bağlantı durumu
   
   // Yeni state'ler - Güvenlik izleme sistemi
   const [sensorData, setSensorData] = useState<SensorData>({
@@ -104,6 +108,7 @@ export default function App() {
   const [inactivityTimer, setInactivityTimer] = useState<NodeJS.Timeout | null>(null);
   
   const devicesRef = useRef<BluetoothDevice[]>([]); // State güncellemesi için ref
+  const lastSentTimestamp = useRef<number>(0); // Son gönderilen veri zamanı (debounce için)
 
   useEffect(() => {
     // İzinleri kontrol et ve iste
@@ -1033,8 +1038,8 @@ export default function App() {
     );
   }
 
-  // RemoteMonitoring sayfası
-  if (currentScreen === 'remote') {
+  // RemoteMonitoring sayfası (phone1 modu için)
+  if (currentScreen === 'remote' && phoneMode === 'phone1') {
     return (
       <RemoteMonitoring 
         onBack={() => setCurrentScreen('home')}
@@ -1046,12 +1051,69 @@ export default function App() {
     );
   }
 
+  // RemoteViewer sayfası (phone2 modu için)
+  if (phoneMode === 'phone2') {
+    return (
+      <RemoteViewer 
+        onBack={() => {
+          // phone2 modunda geri butonu phone1'e geçer
+          setPhoneMode('phone1');
+        }}
+      />
+    );
+  }
+
   return (
     <View style={styles.container}>
       <StatusBar style="auto" />
       
       <View style={styles.header}>
         <Text style={styles.title}>Bluetooth Veri Alıcı</Text>
+        
+        {/* Telefon Modu Seçimi */}
+        <View style={styles.phoneModeContainer}>
+          <TouchableOpacity
+            style={[
+              styles.phoneModeButton,
+              phoneMode === 'phone1' ? styles.phoneModeButtonActive : undefined
+            ]}
+            onPress={() => setPhoneMode('phone1')}
+          >
+            <Text style={[
+              styles.phoneModeText,
+              phoneMode === 'phone1' ? styles.phoneModeTextActive : undefined
+            ]}>
+              📤 Telefon 1 (Gönderen)
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[
+              styles.phoneModeButton,
+              phoneMode === 'phone2' ? styles.phoneModeButtonActive : undefined
+            ]}
+            onPress={() => setPhoneMode('phone2')}
+          >
+            <Text style={[
+              styles.phoneModeText,
+              phoneMode === 'phone2' ? styles.phoneModeTextActive : undefined
+            ]}>
+              📥 Telefon 2 (Alan)
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Backend Durumu */}
+        {phoneMode === 'phone1' && (
+          <View style={styles.backendStatusContainer}>
+            <Text style={[
+              styles.backendStatusText,
+              backendConnected ? styles.backendStatusConnected : styles.backendStatusDisconnected
+            ]}>
+              {backendConnected ? '✅ Backend Bağlı' : '❌ Backend Bağlantısı Yok'}
+            </Text>
+          </View>
+        )}
+
         {connectedDevice && (
           <Text style={styles.connectedText}>
             Bağlı: {devices.find(d => d.id === connectedDevice)?.name || 'Cihaz'}
@@ -1447,6 +1509,51 @@ const styles = StyleSheet.create({
   dataTime: {
     fontSize: 12,
     color: '#999',
+  },
+  // Telefon modu seçimi
+  phoneModeContainer: {
+    flexDirection: 'row',
+    marginTop: 10,
+    marginBottom: 10,
+    gap: 10,
+  },
+  phoneModeButton: {
+    flex: 1,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: '#f5f5f5',
+    borderWidth: 2,
+    borderColor: '#ddd',
+    alignItems: 'center',
+  },
+  phoneModeButtonActive: {
+    backgroundColor: '#e3f2fd',
+    borderColor: '#2196F3',
+  },
+  phoneModeText: {
+    fontSize: 14,
+    color: '#666',
+    fontWeight: '500',
+  },
+  phoneModeTextActive: {
+    color: '#2196F3',
+    fontWeight: 'bold',
+  },
+  // Backend durumu
+  backendStatusContainer: {
+    marginTop: 5,
+    marginBottom: 5,
+  },
+  backendStatusText: {
+    fontSize: 12,
+    fontWeight: '500',
+    textAlign: 'center',
+  },
+  backendStatusConnected: {
+    color: '#4CAF50',
+  },
+  backendStatusDisconnected: {
+    color: '#F44336',
   },
   // Yeni style'lar - Güvenlik izleme sistemi
   connectionStatusCard: {

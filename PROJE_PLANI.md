@@ -240,3 +240,4 @@ interface Thresholds {
 - Simülasyon modu eklenebilir (gerçek sensör yoksa)
 - Bildirimler expo-notifications ile yapılıyor (mevcut)
 
+

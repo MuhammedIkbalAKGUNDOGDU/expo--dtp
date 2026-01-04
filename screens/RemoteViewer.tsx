@@ -1,0 +1,501 @@
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  StyleSheet,
+  Text,
+  View,
+  ScrollView,
+  TouchableOpacity,
+  RefreshControl,
+  Alert,
+  AppState,
+  AppStateStatus,
+} from 'react-native';
+import { StatusBar } from 'expo-status-bar';
+import * as Notifications from 'expo-notifications';
+// Background task paketleri kaldırıldı (build hatası nedeniyle)
+// import * as TaskManager from 'expo-task-manager';
+// import * as BackgroundFetch from 'expo-background-fetch';
+import { getSensorDataFromBackend, getAlarmsFromBackend, SensorData, Alarm } from '../utils/api';
+
+interface RemoteViewerProps {
+  onBack: () => void;
+}
+
+export default function RemoteViewer({ onBack }: RemoteViewerProps) {
+  const [sensorData, setSensorData] = useState<SensorData | null>(null);
+  const [alarms, setAlarms] = useState<Alarm[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [lastUpdate, setLastUpdate] = useState<number | null>(null);
+  const [pollingActive, setPollingActive] = useState(true);
+  const [lastAlarmCheck, setLastAlarmCheck] = useState<number>(Date.now());
+  
+  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const previousAlarmIdsRef = useRef<Set<string>>(new Set());
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+
+  // Bildirim gönderme fonksiyonu
+  const sendNotification = async (title: string, body: string) => {
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: title,
+        body: body,
+        sound: true,
+        priority: 'high',
+      },
+      trigger: null, // Hemen gönder
+    });
+  };
+
+  // Backend'den veri çekme
+  const fetchData = async () => {
+    if (!pollingActive) return;
+
+    try {
+      setIsLoading(true);
+      
+      // Sensör verilerini çek
+      const sensorResponse = await getSensorDataFromBackend();
+      if (sensorResponse.data) {
+        setSensorData(sensorResponse.data);
+        setLastUpdate(sensorResponse.timestamp);
+      }
+
+      // Alarmları çek (son kontrol zamanından sonraki alarmlar)
+      const alarmsResponse = await getAlarmsFromBackend(lastAlarmCheck);
+      if (alarmsResponse.alarms && alarmsResponse.alarms.length > 0) {
+        // Yeni alarmları tespit et
+        const newAlarms = alarmsResponse.alarms.filter(
+          alarm => !previousAlarmIdsRef.current.has(alarm.id)
+        );
+
+        if (newAlarms.length > 0) {
+          console.log('🚨 Yeni alarmlar tespit edildi:', newAlarms);
+          
+          // Yeni alarmları state'e ekle
+          setAlarms((prev) => {
+            const combined = [...newAlarms, ...prev];
+            // Son 50 alarmı tut
+            return combined.slice(0, 50);
+          });
+
+          // Yeni alarmlar için bildirim gönder
+          newAlarms.forEach((alarm) => {
+            sendNotification(
+              '🚨 ACİL DURUM',
+              alarm.message
+            );
+          });
+
+          // Alarm ID'lerini kaydet
+          newAlarms.forEach((alarm) => {
+            previousAlarmIdsRef.current.add(alarm.id);
+          });
+        }
+
+        setLastAlarmCheck(Date.now());
+      }
+    } catch (error: any) {
+      console.error('❌ Backend\'den veri çekme hatası:', error);
+      // Hata durumunda kullanıcıya bilgi ver (sessizce, sadece log)
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Polling başlatma
+  useEffect(() => {
+    if (pollingActive) {
+      // İlk veriyi hemen çek
+      fetchData();
+
+      // Sonra her 3 saniyede bir çek
+      pollingIntervalRef.current = setInterval(() => {
+        fetchData();
+      }, 3000);
+
+      return () => {
+        if (pollingIntervalRef.current) {
+          clearInterval(pollingIntervalRef.current);
+        }
+      };
+    } else {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+      }
+    }
+  }, [pollingActive]);
+
+  // App state değişikliklerini dinle (background/foreground)
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', async (nextAppState: AppStateStatus) => {
+      if (
+        appStateRef.current.match(/inactive|background/) &&
+        nextAppState === 'active'
+      ) {
+        console.log('📱 Uygulama foreground\'a geldi');
+        // Uygulama açıldığında veriyi hemen çek
+        fetchData();
+      } else if (nextAppState.match(/inactive|background/)) {
+        console.log('📱 Uygulama background\'a gitti');
+        // Background task kaldırıldı - sadece uygulama açıkken çalışır
+        // Ekran kapalıyken background task çalışmaz
+      }
+      appStateRef.current = nextAppState;
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
+
+  // Komponent unmount olduğunda temizle
+  useEffect(() => {
+    return () => {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+      }
+      // Background task kaldırıldı
+    };
+  }, []);
+
+  const handleRefresh = () => {
+    fetchData();
+  };
+
+  const togglePolling = () => {
+    setPollingActive(!pollingActive);
+    Alert.alert(
+      pollingActive ? 'Polling Durduruldu' : 'Polling Başlatıldı',
+      pollingActive 
+        ? 'Backend\'den veri çekme durduruldu.'
+        : 'Backend\'den veri çekme başlatıldı (her 3 saniyede bir).'
+    );
+  };
+
+  return (
+    <View style={styles.container}>
+      <StatusBar style="auto" />
+      
+      <View style={styles.header}>
+        <TouchableOpacity onPress={onBack} style={styles.backButton}>
+          <Text style={styles.backButtonText}>← Geri</Text>
+        </TouchableOpacity>
+        <Text style={styles.title}>📥 Uzaktan İzleme</Text>
+        <View style={styles.headerSpacer} />
+      </View>
+
+      <View style={styles.controlsContainer}>
+        <TouchableOpacity
+          style={[styles.controlButton, pollingActive ? styles.controlButtonActive : styles.controlButtonInactive]}
+          onPress={togglePolling}
+        >
+          <Text style={styles.controlButtonText}>
+            {pollingActive ? '⏸️ Durdur' : '▶️ Başlat'}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.controlButton, styles.refreshButton]}
+          onPress={handleRefresh}
+        >
+          <Text style={styles.controlButtonText}>🔄 Yenile</Text>
+        </TouchableOpacity>
+      </View>
+
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          <RefreshControl refreshing={isLoading} onRefresh={handleRefresh} />
+        }
+      >
+        {/* Durum Göstergesi */}
+        <View style={styles.statusCard}>
+          <Text style={styles.statusTitle}>📡 Bağlantı Durumu</Text>
+          <Text style={styles.statusText}>
+            {pollingActive ? '✅ Aktif - Veri çekiliyor' : '⏸️ Durduruldu'}
+          </Text>
+          {lastUpdate && (
+            <Text style={styles.statusSubtext}>
+              Son güncelleme: {new Date(lastUpdate).toLocaleTimeString()}
+            </Text>
+          )}
+        </View>
+
+        {/* Sensör Verileri */}
+        {sensorData ? (
+          <View style={styles.sensorCard}>
+            <Text style={styles.sectionTitle}>📊 Sensör Verileri</Text>
+            
+            {sensorData.heartRate !== null && (
+              <View style={styles.dataRow}>
+                <Text style={styles.dataLabel}>❤️ Kalp Atışı:</Text>
+                <Text style={styles.dataValue}>{sensorData.heartRate} BPM</Text>
+              </View>
+            )}
+
+            {(sensorData.accelX !== null || sensorData.accelY !== null || sensorData.accelZ !== null) && (
+              <View style={styles.dataRow}>
+                <Text style={styles.dataLabel}>📐 İvme:</Text>
+                <Text style={styles.dataValue}>
+                  X: {sensorData.accelX?.toFixed(2) || '--'} 
+                  Y: {sensorData.accelY?.toFixed(2) || '--'} 
+                  Z: {sensorData.accelZ?.toFixed(2) || '--'}
+                </Text>
+              </View>
+            )}
+
+            <View style={styles.dataRow}>
+              <Text style={styles.dataLabel}>🏃 Hareket:</Text>
+              <Text style={styles.dataValue}>
+                {sensorData.movement === 'active' ? 'Aktif' :
+                 sensorData.movement === 'idle' ? 'Hareketsiz' :
+                 sensorData.movement === 'fall' ? 'Düşme' : 'Bilinmiyor'}
+              </Text>
+            </View>
+
+            {sensorData.battery !== null && (
+              <View style={styles.dataRow}>
+                <Text style={styles.dataLabel}>🔋 Pil:</Text>
+                <Text style={styles.dataValue}>{sensorData.battery}%</Text>
+              </View>
+            )}
+
+            <Text style={styles.timestampText}>
+              Zaman: {new Date(sensorData.timestamp).toLocaleString()}
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.emptyCard}>
+            <Text style={styles.emptyText}>Henüz sensör verisi alınmadı</Text>
+            <Text style={styles.emptySubtext}>
+              Backend'den veri gelmesi bekleniyor...
+            </Text>
+          </View>
+        )}
+
+        {/* Alarmlar */}
+        <View style={styles.alarmsCard}>
+          <Text style={styles.sectionTitle}>🚨 Alarmlar ({alarms.length})</Text>
+          {alarms.length === 0 ? (
+            <Text style={styles.emptyText}>Henüz alarm yok</Text>
+          ) : (
+            alarms.slice(0, 10).map((alarm) => (
+              <View key={alarm.id} style={styles.alarmItem}>
+                <View style={styles.alarmHeader}>
+                  <Text style={styles.alarmType}>{alarm.type.toUpperCase()}</Text>
+                  <Text style={styles.alarmTime}>
+                    {new Date(alarm.timestamp).toLocaleTimeString()}
+                  </Text>
+                </View>
+                <Text style={styles.alarmMessage}>{alarm.message}</Text>
+                {alarm.acknowledged && (
+                  <Text style={styles.acknowledgedText}>✓ Onaylandı</Text>
+                )}
+              </View>
+            ))
+          )}
+        </View>
+      </ScrollView>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#f5f5f5',
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 20,
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
+    paddingTop: 50,
+  },
+  backButton: {
+    padding: 5,
+  },
+  backButtonText: {
+    fontSize: 16,
+    color: '#2196F3',
+    fontWeight: '500',
+  },
+  title: {
+    flex: 1,
+    fontSize: 20,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    color: '#333',
+  },
+  headerSpacer: {
+    width: 60,
+  },
+  controlsContainer: {
+    flexDirection: 'row',
+    padding: 15,
+    gap: 10,
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
+  },
+  controlButton: {
+    flex: 1,
+    padding: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  controlButtonActive: {
+    backgroundColor: '#F44336',
+  },
+  controlButtonInactive: {
+    backgroundColor: '#4CAF50',
+  },
+  refreshButton: {
+    backgroundColor: '#2196F3',
+  },
+  controlButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    padding: 15,
+  },
+  statusCard: {
+    backgroundColor: '#fff',
+    padding: 15,
+    borderRadius: 10,
+    marginBottom: 15,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  statusTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 8,
+    color: '#333',
+  },
+  statusText: {
+    fontSize: 16,
+    color: '#666',
+    marginBottom: 5,
+  },
+  statusSubtext: {
+    fontSize: 12,
+    color: '#999',
+  },
+  sensorCard: {
+    backgroundColor: '#fff',
+    padding: 15,
+    borderRadius: 10,
+    marginBottom: 15,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 15,
+    color: '#333',
+  },
+  dataRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  dataLabel: {
+    fontSize: 16,
+    color: '#666',
+    flex: 1,
+  },
+  dataValue: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#333',
+    flex: 1,
+    textAlign: 'right',
+  },
+  timestampText: {
+    fontSize: 12,
+    color: '#999',
+    marginTop: 10,
+    textAlign: 'center',
+  },
+  emptyCard: {
+    backgroundColor: '#fff',
+    padding: 20,
+    borderRadius: 10,
+    marginBottom: 15,
+    alignItems: 'center',
+  },
+  emptyText: {
+    fontSize: 16,
+    color: '#999',
+    textAlign: 'center',
+  },
+  emptySubtext: {
+    fontSize: 12,
+    color: '#ccc',
+    marginTop: 5,
+    textAlign: 'center',
+  },
+  alarmsCard: {
+    backgroundColor: '#fff',
+    padding: 15,
+    borderRadius: 10,
+    marginBottom: 15,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  alarmItem: {
+    padding: 12,
+    marginBottom: 10,
+    backgroundColor: '#fff3cd',
+    borderRadius: 8,
+    borderLeftWidth: 4,
+    borderLeftColor: '#ffc107',
+  },
+  alarmHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 5,
+  },
+  alarmType: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#856404',
+    textTransform: 'uppercase',
+  },
+  alarmTime: {
+    fontSize: 12,
+    color: '#856404',
+  },
+  alarmMessage: {
+    fontSize: 14,
+    color: '#333',
+    marginBottom: 5,
+  },
+  acknowledgedText: {
+    fontSize: 12,
+    color: '#4CAF50',
+    fontStyle: 'italic',
+  },
+});
+
