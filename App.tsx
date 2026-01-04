@@ -569,6 +569,62 @@ export default function App() {
     });
   };
 
+  // Backend'e mock veri gönder (test için)
+  const sendMockDataToBackend = async () => {
+    try {
+      console.log('🧪 Mock veri backend\'e gönderiliyor...');
+      
+      // Mock sensör verisi oluştur
+      const mockSensorData: SensorData = {
+        heartRate: Math.floor(Math.random() * 40) + 60, // 60-100 arası
+        accelX: parseFloat((Math.random() * 2 - 1).toFixed(2)), // -1 ile 1 arası
+        accelY: parseFloat((Math.random() * 2 - 1).toFixed(2)),
+        accelZ: parseFloat((9.8 + (Math.random() * 0.4 - 0.2)).toFixed(2)), // 9.6-10.0 arası
+        movement: Math.random() > 0.7 ? 'fall' : 'active',
+        timestamp: Date.now(),
+        battery: Math.floor(Math.random() * 30) + 70, // 70-100 arası
+      };
+
+      // Mock alarm oluştur (bazen)
+      const mockAlarms: Alarm[] = [];
+      if (Math.random() > 0.5) {
+        mockAlarms.push({
+          id: `mock_${Date.now()}`,
+          type: Math.random() > 0.5 ? 'fall' : 'high_heart_rate',
+          message: Math.random() > 0.5 
+            ? 'Test: Düşme tespit edildi!' 
+            : 'Test: Yüksek kalp atışı tespit edildi!',
+          timestamp: Date.now(),
+          acknowledged: false,
+        });
+      }
+
+      // Backend'e gönder
+      const response = await sendSensorDataToBackend(mockSensorData, mockAlarms);
+      
+      console.log('✅ Mock veri backend\'e gönderildi:', response);
+      setBackendConnected(true);
+      
+      // Sensör verilerini ekranda göster
+      setSensorData(mockSensorData);
+      if (mockAlarms.length > 0) {
+        setAlarms((prev) => [...mockAlarms, ...prev]);
+      }
+      
+      Alert.alert(
+        '✅ Başarılı', 
+        `Mock veri backend'e gönderildi!\n\nKalp Atışı: ${mockSensorData.heartRate} BPM\nHareket: ${mockSensorData.movement}\n${mockAlarms.length > 0 ? `Alarm: ${mockAlarms[0].message}` : 'Alarm yok'}`
+      );
+    } catch (error: any) {
+      console.error('❌ Mock veri gönderme hatası:', error);
+      setBackendConnected(false);
+      Alert.alert(
+        '❌ Hata', 
+        `Backend'e veri gönderilemedi:\n${error?.message || error}\n\nBackend URL'ini ve internet bağlantısını kontrol edin.`
+      );
+    }
+  };
+
   const startScan = async () => {
     if (isScanning || !bleAvailable || !bleEnabled) {
       Alert.alert('Uyarı', 'Bluetooth açık değil veya hazır değil');
@@ -1179,13 +1235,14 @@ export default function App() {
               <Text style={styles.buttonText}>Cihazları Tara</Text>
             </TouchableOpacity>
             
-            <TouchableOpacity 
-              style={[styles.button, styles.remoteButton, !bleEnabled && styles.buttonDisabled]} 
-              onPress={() => setCurrentScreen('remote')}
-              disabled={!bleEnabled}
-            >
-              <Text style={styles.buttonText}>Uzaktan Katılıyorum</Text>
-            </TouchableOpacity>
+            {phoneMode === 'phone1' && (
+              <TouchableOpacity 
+                style={[styles.button, styles.testButtonMain]} 
+                onPress={sendMockDataToBackend}
+              >
+                <Text style={styles.buttonText}>🧪 Backend'e Mock Veri Gönder</Text>
+              </TouchableOpacity>
+            )}
           </>
         )}
 
@@ -1427,8 +1484,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 10,
   },
-  remoteButton: {
-    backgroundColor: '#4CAF50',
+  testButtonMain: {
+    backgroundColor: '#2196F3',
     marginTop: 10,
   },
   uuidButton: {
@@ -1652,6 +1709,32 @@ const styles = StyleSheet.create({
   emergencyButtonSubtext: {
     color: '#fff',
     fontSize: 16,
+    opacity: 0.9,
+  },
+  // Test butonu
+  testContainer: {
+    marginBottom: 20,
+  },
+  testButton: {
+    backgroundColor: '#2196F3',
+    padding: 20,
+    borderRadius: 15,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  testButtonText: {
+    color: '#fff',
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 5,
+  },
+  testButtonSubtext: {
+    color: '#fff',
+    fontSize: 14,
     opacity: 0.9,
   },
   sensorDataContainer: {
