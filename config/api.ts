@@ -1,11 +1,11 @@
 // Backend API Configuration
-// Cloud deployment URL'i buraya eklenecek
-// Geliştirme için: http://localhost:3000 (aynı WiFi'da)
-// Production için: Cloud servis URL'i (örnek: https://expo-cdtp-backend.railway.app)
+// Railway backend URL'i - Railway dashboard'dan alın (Settings > Domains veya Service URL)
+// Örnek: https://expo-cdtp-backend-production.up.railway.app
+// Railway dashboard'dan URL'i alıp aşağıdaki satıra yazın:
+const RAILWAY_BACKEND_URL = 'https://ctdp-backend-production.up.railway.app';
 
-export const API_BASE_URL = __DEV__ 
-  ? 'http://localhost:3000'  // Geliştirme
-  : 'https://expo-cdtp-backend.railway.app';  // Production (deploy sonrası güncellenecek)
+// Her zaman Railway URL'ini kullan (production)
+export const API_BASE_URL = RAILWAY_BACKEND_URL;
 
 export const API_ENDPOINTS = {
   HEALTH: '/api/health',

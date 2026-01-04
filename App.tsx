@@ -18,7 +18,8 @@ import * as Notifications from 'expo-notifications';
 import * as DeviceInfo from 'expo-device';
 import RemoteMonitoring from './screens/RemoteMonitoring';
 import RemoteViewer from './screens/RemoteViewer';
-import { sendSensorDataToBackend } from './utils/api';
+import { sendSensorDataToBackend, checkBackendHealth } from './utils/api';
+import { API_BASE_URL } from './config/api';
 
 // Bildirim handler'ı ayarla
 Notifications.setNotificationHandler({
@@ -349,6 +350,41 @@ export default function App() {
       updateValueListener.remove();
     };
   }, []);
+
+  // Backend bağlantı kontrolü (uygulama açıldığında ve periyodik)
+  useEffect(() => {
+    if (phoneMode !== 'phone1') {
+      return;
+    }
+
+    // İlk kontrol
+    const checkConnection = async () => {
+      try {
+        console.log('🔍 Backend bağlantı kontrolü başlatılıyor...');
+        const isHealthy = await checkBackendHealth();
+        setBackendConnected(isHealthy);
+        if (isHealthy) {
+          console.log('✅ Backend bağlantısı başarılı');
+        } else {
+          console.log('❌ Backend bağlantısı başarısız');
+        }
+      } catch (error) {
+        console.error('❌ Backend bağlantı kontrolü hatası:', error);
+        setBackendConnected(false);
+      }
+    };
+
+    checkConnection();
+
+    // Her 10 saniyede bir kontrol et
+    const interval = setInterval(() => {
+      checkConnection();
+    }, 10000);
+
+    return () => {
+      clearInterval(interval);
+    };
+  }, [phoneMode]);
 
   const requestPermissions = async () => {
     if (Platform.OS === 'android') {
@@ -1111,6 +1147,12 @@ export default function App() {
             ]}>
               {backendConnected ? '✅ Backend Bağlı' : '❌ Backend Bağlantısı Yok'}
             </Text>
+            <Text style={styles.backendUrlText}>
+              Backend URL: {API_BASE_URL}
+            </Text>
+            <Text style={styles.backendHelpText}>
+              {!backendConnected && 'Not: Telefon ve bilgisayar aynı WiFi ağında olmalı'}
+            </Text>
           </View>
         )}
 
@@ -1554,6 +1596,19 @@ const styles = StyleSheet.create({
   },
   backendStatusDisconnected: {
     color: '#F44336',
+  },
+  backendUrlText: {
+    fontSize: 11,
+    color: '#666',
+    marginTop: 3,
+    textAlign: 'center',
+  },
+  backendHelpText: {
+    fontSize: 10,
+    color: '#999',
+    marginTop: 2,
+    fontStyle: 'italic',
+    textAlign: 'center',
   },
   // Yeni style'lar - Güvenlik izleme sistemi
   connectionStatusCard: {

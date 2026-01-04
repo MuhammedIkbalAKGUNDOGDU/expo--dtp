@@ -16,6 +16,7 @@ import * as Notifications from 'expo-notifications';
 // import * as TaskManager from 'expo-task-manager';
 // import * as BackgroundFetch from 'expo-background-fetch';
 import { getSensorDataFromBackend, getAlarmsFromBackend, SensorData, Alarm } from '../utils/api';
+import { API_BASE_URL } from '../config/api';
 
 interface RemoteViewerProps {
   onBack: () => void;
@@ -28,6 +29,8 @@ export default function RemoteViewer({ onBack }: RemoteViewerProps) {
   const [lastUpdate, setLastUpdate] = useState<number | null>(null);
   const [pollingActive, setPollingActive] = useState(true);
   const [lastAlarmCheck, setLastAlarmCheck] = useState<number>(Date.now());
+  const [backendConnected, setBackendConnected] = useState(false);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
   
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const previousAlarmIdsRef = useRef<Set<string>>(new Set());
@@ -52,16 +55,27 @@ export default function RemoteViewer({ onBack }: RemoteViewerProps) {
 
     try {
       setIsLoading(true);
+      setConnectionError(null);
+      
+      console.log('📥 Backend\'den veri çekiliyor...');
       
       // Sensör verilerini çek
       const sensorResponse = await getSensorDataFromBackend();
+      console.log('✅ Sensör verisi alındı:', sensorResponse);
+      
       if (sensorResponse.data) {
         setSensorData(sensorResponse.data);
         setLastUpdate(sensorResponse.timestamp);
+        setBackendConnected(true);
+      } else {
+        console.log('⚠️ Sensör verisi yok (henüz veri gönderilmemiş)');
+        setBackendConnected(true); // Backend çalışıyor ama veri yok
       }
 
       // Alarmları çek (son kontrol zamanından sonraki alarmlar)
       const alarmsResponse = await getAlarmsFromBackend(lastAlarmCheck);
+      console.log('✅ Alarmlar alındı:', alarmsResponse);
+      
       if (alarmsResponse.alarms && alarmsResponse.alarms.length > 0) {
         // Yeni alarmları tespit et
         const newAlarms = alarmsResponse.alarms.filter(
@@ -95,8 +109,16 @@ export default function RemoteViewer({ onBack }: RemoteViewerProps) {
         setLastAlarmCheck(Date.now());
       }
     } catch (error: any) {
-      console.error('❌ Backend\'den veri çekme hatası:', error);
-      // Hata durumunda kullanıcıya bilgi ver (sessizce, sadece log)
+      console.error('❌ ========================================');
+      console.error('❌ Backend\'den veri çekme hatası!');
+      console.error('❌ ========================================');
+      console.error('❌ Hata tipi:', error?.name || 'Unknown');
+      console.error('❌ Hata mesajı:', error?.message || error);
+      console.error('❌ Hata detayı:', JSON.stringify(error, null, 2));
+      console.error('❌ ========================================');
+      
+      setBackendConnected(false);
+      setConnectionError(error?.message || 'Backend\'e bağlanılamıyor');
     } finally {
       setIsLoading(false);
     }
@@ -211,12 +233,30 @@ export default function RemoteViewer({ onBack }: RemoteViewerProps) {
         {/* Durum Göstergesi */}
         <View style={styles.statusCard}>
           <Text style={styles.statusTitle}>📡 Bağlantı Durumu</Text>
-          <Text style={styles.statusText}>
-            {pollingActive ? '✅ Aktif - Veri çekiliyor' : '⏸️ Durduruldu'}
+          <Text style={[
+            styles.statusText,
+            backendConnected ? styles.statusConnected : styles.statusDisconnected
+          ]}>
+            {pollingActive 
+              ? (backendConnected ? '✅ Aktif - Backend Bağlı' : '❌ Aktif - Backend Bağlantısı Yok')
+              : '⏸️ Durduruldu'}
           </Text>
+          <Text style={styles.backendUrlText}>
+            Backend URL: {API_BASE_URL}
+          </Text>
+          {connectionError && (
+            <Text style={styles.errorText}>
+              ❌ Hata: {connectionError}
+            </Text>
+          )}
           {lastUpdate && (
             <Text style={styles.statusSubtext}>
               Son güncelleme: {new Date(lastUpdate).toLocaleTimeString()}
+            </Text>
+          )}
+          {!lastUpdate && pollingActive && !backendConnected && (
+            <Text style={styles.backendHelpText}>
+              Backend'e bağlanılamıyor. Backend URL'ini ve internet bağlantısını kontrol edin.
             </Text>
           )}
         </View>
@@ -391,6 +431,32 @@ const styles = StyleSheet.create({
   statusSubtext: {
     fontSize: 12,
     color: '#999',
+  },
+  backendUrlText: {
+    fontSize: 11,
+    color: '#666',
+    marginTop: 5,
+    textAlign: 'center',
+  },
+  backendHelpText: {
+    fontSize: 10,
+    color: '#F44336',
+    marginTop: 5,
+    fontStyle: 'italic',
+    textAlign: 'center',
+  },
+  statusConnected: {
+    color: '#4CAF50',
+  },
+  statusDisconnected: {
+    color: '#F44336',
+  },
+  errorText: {
+    fontSize: 11,
+    color: '#F44336',
+    marginTop: 5,
+    fontWeight: 'bold',
+    textAlign: 'center',
   },
   sensorCard: {
     backgroundColor: '#fff',
