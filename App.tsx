@@ -111,6 +111,8 @@ interface SensorData {
   movement: 'active' | 'idle' | 'fall' | 'unknown';
   timestamp: number;
   battery: number | null;         // %
+  isEmergency?: boolean;          // Acil durum (ESP32'den gelen "Acil" değeri)
+  isAlarm?: boolean;               // Alarm durumu (ESP32'den gelen "Alarm" değeri)
 }
 
 // Alarm tipleri
@@ -375,6 +377,42 @@ export default function App() {
             setSensorData(parsedData);
             console.log('📊 Sensör verileri güncellendi:', parsedData);
             
+            // ESP32'den gelen Acil durumu kontrolü
+            if (parsedData.isEmergency) {
+              console.log('🚨 ACİL DURUM TESPİT EDİLDİ (ESP32)');
+              sendNotification(
+                '🚨 ACİL DURUM',
+                'ESP32\'den acil durum sinyali alındı! Hemen müdahale gerekebilir.'
+              );
+              // Acil durum alarmı ekle
+              const emergencyAlarm: Alarm = {
+                id: `emergency_${Date.now()}`,
+                type: 'manual',
+                message: 'ESP32\'den acil durum sinyali alındı!',
+                timestamp: Date.now(),
+                acknowledged: false,
+              };
+              setAlarms((prev) => [emergencyAlarm, ...prev]);
+            }
+            
+            // ESP32'den gelen Alarm durumu kontrolü
+            if (parsedData.isAlarm) {
+              console.log('🚨 ALARM TESPİT EDİLDİ (ESP32)');
+              sendNotification(
+                '🚨 ALARM AKTİF',
+                'ESP32\'den alarm sinyali alındı! Durumu kontrol edin.'
+              );
+              // Alarm durumu alarmı ekle
+              const alarmStatus: Alarm = {
+                id: `alarm_${Date.now()}`,
+                type: 'manual',
+                message: 'ESP32\'den alarm sinyali alındı!',
+                timestamp: Date.now(),
+                acknowledged: false,
+              };
+              setAlarms((prev) => [alarmStatus, ...prev]);
+            }
+            
             // Alarm tespiti yap
             const newAlarms = detectAlarms(parsedData);
             if (newAlarms.length > 0) {
@@ -390,21 +428,8 @@ export default function App() {
               });
             }
             
-            // Backend'e gönder (phone1 modunda ve debounce ile)
-            if (phoneMode === 'phone1') {
-              const now = Date.now();
-              // Son 5 saniyede gönderilmediyse gönder (debounce)
-              if (now - lastSentTimestamp.current > 5000) {
-                lastSentTimestamp.current = now;
-                // Mevcut alarmları al ve gönder
-                setAlarms((currentAlarms) => {
-                  sendDataToBackend(parsedData, [...newAlarms, ...currentAlarms]);
-                  return currentAlarms;
-                });
-              } else {
-                console.log('⏳ Backend gönderimi bekleniyor (debounce)...');
-              }
-            }
+            // Backend gönderimi interval ile yapılıyor (her 5 saniyede bir)
+            // Burada sadece veriyi güncelliyoruz, gönderim interval'de yapılacak
           }
           
           console.log('🔔 İşlem tamamlandı');
@@ -462,6 +487,35 @@ export default function App() {
       clearInterval(interval);
     };
   }, [phoneMode]);
+
+  // Backend'e periyodik veri gönderimi (her 5 saniyede bir)
+  useEffect(() => {
+    if (phoneMode !== 'phone1' || !connectedDevice) {
+      return;
+    }
+
+    console.log('🔄 Backend periyodik gönderim başlatılıyor (her 5 saniyede bir)...');
+
+    const backendInterval = setInterval(() => {
+      // Mevcut sensör verisi ve alarmları al
+      setSensorData((currentSensorData) => {
+        setAlarms((currentAlarms) => {
+          // Veri varsa backend'e gönder
+          if (currentSensorData) {
+            console.log('📤 Periyodik backend gönderimi (5 saniye)...');
+            sendDataToBackend(currentSensorData, currentAlarms);
+          }
+          return currentAlarms;
+        });
+        return currentSensorData;
+      });
+    }, 5000); // Her 5 saniyede bir
+
+    return () => {
+      console.log('🔄 Backend periyodik gönderim durduruluyor...');
+      clearInterval(backendInterval);
+    };
+  }, [phoneMode, connectedDevice]);
 
   const requestPermissions = async () => {
     if (Platform.OS === 'android') {
@@ -550,6 +604,12 @@ export default function App() {
           movement = 'fall';
         }
         
+        // Acil durum kontrolü
+        const isEmergency = !!(parts['Acil'] && parts['Acil'].toUpperCase() === 'EVET');
+        
+        // Alarm durumu kontrolü
+        const isAlarm = !!(parts['Alarm'] && (parts['Alarm'].toUpperCase() === 'AKTIF' || parts['Alarm'].toUpperCase() === 'EVET'));
+        
         return {
           heartRate,
           accelX: null,
@@ -558,6 +618,8 @@ export default function App() {
           movement,
           timestamp: Date.now(),
           battery: null,
+          isEmergency,
+          isAlarm,
         };
       }
       
@@ -1094,6 +1156,42 @@ export default function App() {
                 setSensorData(parsedData);
                 console.log('📊 Sensör verileri güncellendi (read ile):', parsedData);
                 
+                // ESP32'den gelen Acil durumu kontrolü
+                if (parsedData.isEmergency) {
+                  console.log('🚨 ACİL DURUM TESPİT EDİLDİ (ESP32)');
+                  sendNotification(
+                    '🚨 ACİL DURUM',
+                    'ESP32\'den acil durum sinyali alındı! Hemen müdahale gerekebilir.'
+                  );
+                  // Acil durum alarmı ekle
+                  const emergencyAlarm: Alarm = {
+                    id: `emergency_${Date.now()}`,
+                    type: 'manual',
+                    message: 'ESP32\'den acil durum sinyali alındı!',
+                    timestamp: Date.now(),
+                    acknowledged: false,
+                  };
+                  setAlarms((prev) => [emergencyAlarm, ...prev]);
+                }
+                
+                // ESP32'den gelen Alarm durumu kontrolü
+                if (parsedData.isAlarm) {
+                  console.log('🚨 ALARM TESPİT EDİLDİ (ESP32)');
+                  sendNotification(
+                    '🚨 ALARM AKTİF',
+                    'ESP32\'den alarm sinyali alındı! Durumu kontrol edin.'
+                  );
+                  // Alarm durumu alarmı ekle
+                  const alarmStatus: Alarm = {
+                    id: `alarm_${Date.now()}`,
+                    type: 'manual',
+                    message: 'ESP32\'den alarm sinyali alındı!',
+                    timestamp: Date.now(),
+                    acknowledged: false,
+                  };
+                  setAlarms((prev) => [alarmStatus, ...prev]);
+                }
+                
                 // Alarm tespiti yap
                 const newAlarms = detectAlarms(parsedData);
                 if (newAlarms.length > 0) {
@@ -1109,21 +1207,8 @@ export default function App() {
                   });
                 }
                 
-                // Backend'e gönder (phone1 modunda ve debounce ile)
-                if (phoneMode === 'phone1') {
-                  const now = Date.now();
-                  // Son 5 saniyede gönderilmediyse gönder (debounce)
-                  if (now - lastSentTimestamp.current > 5000) {
-                    lastSentTimestamp.current = now;
-                    // Mevcut alarmları al ve gönder
-                    setAlarms((currentAlarms) => {
-                      sendDataToBackend(parsedData, [...newAlarms, ...currentAlarms]);
-                      return currentAlarms;
-                    });
-                  } else {
-                    console.log('⏳ Backend gönderimi bekleniyor (debounce)...');
-                  }
-                }
+                // Backend gönderimi interval ile yapılıyor (her 5 saniyede bir)
+                // Burada sadece veriyi güncelliyoruz
               }
               
               console.log('✅ Veri işlendi (bildirim gönderilmedi - sadece alarm durumlarında bildirim gönderilir)');
