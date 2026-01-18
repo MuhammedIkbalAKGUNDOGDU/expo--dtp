@@ -1409,14 +1409,6 @@ export default function App() {
               <Text style={styles.buttonText}>Cihazları Tara</Text>
             </TouchableOpacity>
             
-            {phoneMode === 'phone1' && (
-              <TouchableOpacity 
-                style={[styles.button, styles.testButtonMain]} 
-                onPress={sendMockDataToBackend}
-              >
-                <Text style={styles.buttonText}>🧪 Backend'e Mock Veri Gönder</Text>
-              </TouchableOpacity>
-            )}
           </>
         )}
 
