@@ -21,6 +21,69 @@ import RemoteViewer from './screens/RemoteViewer';
 import { sendSensorDataToBackend, checkBackendHealth } from './utils/api';
 import { API_BASE_URL } from './config/api';
 
+// UTF-8 byte array'i string'e çevir
+const decodeUTF8 = (bytes: number[]): string => {
+  try {
+    // React Native'de Buffer genellikle global olarak mevcuttur
+    if (typeof Buffer !== 'undefined') {
+      return Buffer.from(bytes).toString('utf8');
+    }
+    
+    // Fallback: TextDecoder kullan (eğer mevcut ise)
+    if (typeof TextDecoder !== 'undefined') {
+      const uint8Array = new Uint8Array(bytes);
+      return new TextDecoder('utf-8').decode(uint8Array);
+    }
+    
+    // Son fallback: Basit decode (sadece ASCII ve tek byte karakterler için)
+    // UTF-8 multi-byte karakterler için çalışmaz ama en azından ASCII çalışır
+    let result = '';
+    for (let i = 0; i < bytes.length; i++) {
+      // UTF-8 multi-byte karakter kontrolü
+      if (bytes[i] < 0x80) {
+        // ASCII karakter (0-127)
+        result += String.fromCharCode(bytes[i]);
+      } else if ((bytes[i] & 0xE0) === 0xC0) {
+        // 2-byte UTF-8 karakter
+        if (i + 1 < bytes.length) {
+          const charCode = ((bytes[i] & 0x1F) << 6) | (bytes[i + 1] & 0x3F);
+          result += String.fromCharCode(charCode);
+          i++;
+        }
+      } else if ((bytes[i] & 0xF0) === 0xE0) {
+        // 3-byte UTF-8 karakter (emojiler ve özel karakterler)
+        if (i + 2 < bytes.length) {
+          const charCode = ((bytes[i] & 0x0F) << 12) | 
+                          ((bytes[i + 1] & 0x3F) << 6) | 
+                          (bytes[i + 2] & 0x3F);
+          result += String.fromCharCode(charCode);
+          i += 2;
+        }
+      } else if ((bytes[i] & 0xF8) === 0xF0) {
+        // 4-byte UTF-8 karakter
+        if (i + 3 < bytes.length) {
+          const charCode = ((bytes[i] & 0x07) << 18) | 
+                          ((bytes[i + 1] & 0x3F) << 12) | 
+                          ((bytes[i + 2] & 0x3F) << 6) | 
+                          (bytes[i + 3] & 0x3F);
+          // 4-byte karakterler için String.fromCharCode yeterli değil, 
+          // surrogate pair kullanmak gerekir ama basit versiyonda atlayalım
+          result += String.fromCharCode(charCode);
+          i += 3;
+        }
+      } else {
+        // Geçersiz byte, atla
+        result += '?';
+      }
+    }
+    return result;
+  } catch (error) {
+    console.error('UTF-8 decode hatası:', error);
+    // Hata durumunda basit decode dene
+    return bytes.map(b => String.fromCharCode(b)).join('');
+  }
+};
+
 // Bildirim handler'ı ayarla
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -289,12 +352,10 @@ export default function App() {
         console.log('Veri uzunluğu:', data.value?.length || 0);
         
         try {
-          // Byte array'i string'e çevir
+          // Byte array'i UTF-8 string'e çevir
           const bytes = data.value;
-          let decodedData = '';
-          for (let i = 0; i < bytes.length; i++) {
-            decodedData += String.fromCharCode(bytes[i]);
-          }
+          // UTF-8 decode helper fonksiyonu kullan
+          const decodedData = decodeUTF8(bytes);
           
           console.log('Decode edilmiş veri:', decodedData);
           console.log('Zaman:', new Date().toLocaleTimeString());
@@ -327,6 +388,22 @@ export default function App() {
                   alarm.message
                 );
               });
+            }
+            
+            // Backend'e gönder (phone1 modunda ve debounce ile)
+            if (phoneMode === 'phone1') {
+              const now = Date.now();
+              // Son 5 saniyede gönderilmediyse gönder (debounce)
+              if (now - lastSentTimestamp.current > 5000) {
+                lastSentTimestamp.current = now;
+                // Mevcut alarmları al ve gönder
+                setAlarms((currentAlarms) => {
+                  sendDataToBackend(parsedData, [...newAlarms, ...currentAlarms]);
+                  return currentAlarms;
+                });
+              } else {
+                console.log('⏳ Backend gönderimi bekleniyor (debounce)...');
+              }
             }
           }
           
@@ -428,6 +505,7 @@ export default function App() {
   };
 
   // ESP32'den gelen veriyi parse et
+  // Format: BPM:0,Hareket:YOK,Dusme:HAYIR,Acil:HAYIR,Alarm:KAPALI
   const parseSensorData = (data: string): SensorData | null => {
     try {
       // JSON formatında veri geliyorsa
@@ -444,9 +522,47 @@ export default function App() {
         };
       }
       
-      // Basit format: "ESP32'den veri: X saniye" gibi
-      // Şimdilik basit parse, sonra ESP32 kodunu güncelleyeceğiz
-      const heartRateMatch = data.match(/HR[:\s]+(\d+)/i);
+      // ESP32 formatı: BPM:0,Hareket:YOK,Dusme:HAYIR,Acil:HAYIR,Alarm:KAPALI
+      if (data.includes('BPM:') && data.includes(',')) {
+        const parts: { [key: string]: string } = {};
+        data.split(',').forEach(part => {
+          const [key, value] = part.split(':');
+          if (key && value) {
+            parts[key.trim()] = value.trim();
+          }
+        });
+        
+        // BPM parse
+        const bpm = parts['BPM'] ? parseInt(parts['BPM']) : null;
+        const heartRate = (bpm !== null && bpm > 0) ? bpm : null;
+        
+        // Hareket parse
+        let movement: 'active' | 'idle' | 'fall' | 'unknown' = 'unknown';
+        if (parts['Hareket']) {
+          const hareket = parts['Hareket'].toUpperCase();
+          if (hareket === 'VAR' || hareket === 'YOK') {
+            movement = hareket === 'VAR' ? 'active' : 'idle';
+          }
+        }
+        
+        // Düşme kontrolü
+        if (parts['Dusme'] && parts['Dusme'].toUpperCase() === 'EVET') {
+          movement = 'fall';
+        }
+        
+        return {
+          heartRate,
+          accelX: null,
+          accelY: null,
+          accelZ: null,
+          movement,
+          timestamp: Date.now(),
+          battery: null,
+        };
+      }
+      
+      // Eski format desteği (geriye dönük uyumluluk)
+      const heartRateMatch = data.match(/HR[:\s]+(\d+)/i) || data.match(/BPM[:\s]+(\d+)/i);
       const heartRate = heartRateMatch ? parseInt(heartRateMatch[1]) : null;
       
       return {
@@ -567,6 +683,33 @@ export default function App() {
       },
       trigger: null, // Hemen gönder
     });
+  };
+
+  // Backend'e gerçek sensör verisi gönder
+  const sendDataToBackend = async (sensorData: SensorData, currentAlarms: Alarm[]) => {
+    if (phoneMode !== 'phone1') {
+      console.log('⚠️ Backend gönderimi sadece phone1 modunda yapılır');
+      return;
+    }
+
+    try {
+      console.log('📤 ========================================');
+      console.log('📤 === BACKEND\'E VERİ GÖNDERİLİYOR ===');
+      console.log('📤 ========================================');
+      console.log('📊 Sensör verisi:', JSON.stringify(sensorData, null, 2));
+      console.log('🚨 Alarm sayısı:', currentAlarms.length);
+      console.log('📤 ========================================');
+      
+      const response = await sendSensorDataToBackend(sensorData, currentAlarms);
+      
+      console.log('✅ Backend\'e veri gönderildi:', response);
+      setBackendConnected(true);
+    } catch (error: any) {
+      console.error('❌ Backend\'e veri gönderme hatası:', error);
+      setBackendConnected(false);
+      // Hata durumunda kullanıcıya bildirim gönderme (çok fazla olabilir)
+      // Sadece log'a yaz
+    }
   };
 
   // Backend'e mock veri gönder (test için)
@@ -925,11 +1068,9 @@ export default function App() {
             console.log('📖 Veri uzunluğu:', data?.length || 0);
             
             if (data && data.length > 0) {
-              // Byte array'i string'e çevir
-              let decodedData = '';
-              for (let i = 0; i < data.length; i++) {
-                decodedData += String.fromCharCode(data[i]);
-              }
+              // Byte array'i UTF-8 string'e çevir
+              // UTF-8 decode helper fonksiyonu kullan (emojiler ve özel karakterler için)
+              const decodedData = decodeUTF8(data);
               
               console.log('📖 Decode edilmiş veri:', decodedData);
               console.log('========================================');
@@ -947,11 +1088,44 @@ export default function App() {
                 return prev;
               });
               
-              // Normal veri geldiğinde bildirim gönderme (sadece alarm durumlarında bildirim gönderilecek)
-              // sendNotification(
-              //   'Bluetooth Verisi Alındı',
-              //   `Yeni veri: ${decodedData}`
-              // );
+              // Sensör verilerini parse et
+              const parsedData = parseSensorData(decodedData);
+              if (parsedData) {
+                setSensorData(parsedData);
+                console.log('📊 Sensör verileri güncellendi (read ile):', parsedData);
+                
+                // Alarm tespiti yap
+                const newAlarms = detectAlarms(parsedData);
+                if (newAlarms.length > 0) {
+                  setAlarms((prev) => [...newAlarms, ...prev]);
+                  console.log('🚨 Yeni alarmlar tespit edildi:', newAlarms);
+                  
+                  // Her alarm için bildirim gönder
+                  newAlarms.forEach((alarm) => {
+                    sendNotification(
+                      '🚨 ACİL DURUM',
+                      alarm.message
+                    );
+                  });
+                }
+                
+                // Backend'e gönder (phone1 modunda ve debounce ile)
+                if (phoneMode === 'phone1') {
+                  const now = Date.now();
+                  // Son 5 saniyede gönderilmediyse gönder (debounce)
+                  if (now - lastSentTimestamp.current > 5000) {
+                    lastSentTimestamp.current = now;
+                    // Mevcut alarmları al ve gönder
+                    setAlarms((currentAlarms) => {
+                      sendDataToBackend(parsedData, [...newAlarms, ...currentAlarms]);
+                      return currentAlarms;
+                    });
+                  } else {
+                    console.log('⏳ Backend gönderimi bekleniyor (debounce)...');
+                  }
+                }
+              }
+              
               console.log('✅ Veri işlendi (bildirim gönderilmedi - sadece alarm durumlarında bildirim gönderilir)');
             } else {
               console.log('⚠️ Veri boş veya null');
