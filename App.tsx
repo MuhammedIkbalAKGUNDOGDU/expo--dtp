@@ -428,7 +428,7 @@ export default function App() {
                 console.log('📢 DÜŞME BİLDİRİMİ GÖNDERİLİYOR...');
                 sendNotification(
                   '🚨 DÜŞME TESPİT EDİLDİ',
-                  'ESP32\'den düşme sinyali alındı! Acil müdahale gerekebilir!'
+                  'Kullanıcı düşmüş olabilir, kontrol sağlayın!'
                 );
                 console.log('✅ DÜŞME BİLDİRİMİ GÖNDERİLDİ');
               } else {
@@ -438,7 +438,7 @@ export default function App() {
               const fallAlarm: Alarm = {
                 id: `fall_${now}`,
                 type: 'fall',
-                message: 'ESP32\'den düşme sinyali alındı! Acil müdahale gerekebilir.',
+                message: 'Kullanıcı düşmüş olabilir, kontrol sağlayın!',
                 timestamp: now,
                 acknowledged: false,
               };
@@ -456,20 +456,43 @@ export default function App() {
               console.log('🚨 ALARM TESPİT EDİLDİ (ESP32)');
               const now = Date.now();
               
-              // Alarm + Hareket yoksa özel bildirim
+              // Alarm + Hareket yoksa hareketsizlik alarmı oluştur
               if (parsedData.movement === 'idle') {
-                console.log('⚠️ ALARM + HAREKET YOK - Özel bildirim gönderiliyor');
+                console.log('⚠️ ALARM + HAREKET YOK - Hareketsizlik alarmı oluşturuluyor');
+                
+                // Hareketsizlik alarmı oluştur
+                const inactivityAlarm: Alarm = {
+                  id: `inactivity_${now}`,
+                  type: 'inactivity',
+                  message: 'ESP32\'den alarm sinyali alındı ve hareket tespit edilmedi!',
+                  timestamp: now,
+                  acknowledged: false,
+                };
+                
+                setAlarms((prev) => {
+                  // Aynı alarm'ı tekrar eklememek için kontrol et (10 saniye içinde)
+                  const recentAlarm = prev.find(a => 
+                    a.type === 'inactivity' && 
+                    (now - a.timestamp) < 10000
+                  );
+                  if (!recentAlarm) {
+                    return [inactivityAlarm, ...prev];
+                  }
+                  return prev;
+                });
+                
+                // Bildirim gönder
                 if (now - lastAlarmNotificationTime.current > 10000) {
                   lastAlarmNotificationTime.current = now;
-                  console.log('📢 ALARM + HAREKET YOK BİLDİRİMİ GÖNDERİLİYOR...');
+                  console.log('📢 HAREKETSİZLİK ALARM BİLDİRİMİ GÖNDERİLİYOR...');
                   sendNotification(
-                    '🚨 ALARM + HAREKET YOK',
-                    'ESP32\'den alarm sinyali alındı ve hareket tespit edilmedi! Acil kontrol gerekebilir.'
+                    '🚨 HAREKETSİZLİK ALARM',
+                    'ESP32\'den alarm sinyali alındı ve hareket tespit edilmedi! Kontrol sağlayın.'
                   );
-                  console.log('✅ ALARM + HAREKET YOK BİLDİRİMİ GÖNDERİLDİ');
+                  console.log('✅ HAREKETSİZLİK ALARM BİLDİRİMİ GÖNDERİLDİ');
                 }
               } else {
-                // Normal alarm bildirimi
+                // Normal alarm bildirimi (hareket var)
                 if (now - lastAlarmNotificationTime.current > 10000) {
                   lastAlarmNotificationTime.current = now;
                   console.log('📢 ALARM BİLDİRİMİ GÖNDERİLİYOR...');
@@ -481,26 +504,24 @@ export default function App() {
                 } else {
                   console.log('⏳ ALARM bildirimi bekleniyor (10 saniye debounce)...');
                 }
+                
+                // Normal alarm durumu alarmı ekle
+                const alarmStatus: Alarm = {
+                  id: `alarm_${now}`,
+                  type: 'manual',
+                  message: 'ESP32\'den alarm sinyali alındı!',
+                  timestamp: now,
+                  acknowledged: false,
+                };
+                setAlarms((prev) => {
+                  // Aynı alarm'ı tekrar eklememek için kontrol et
+                  const exists = prev.find(a => a.id === alarmStatus.id);
+                  if (!exists) {
+                    return [alarmStatus, ...prev];
+                  }
+                  return prev;
+                });
               }
-              
-              // Alarm durumu alarmı ekle (her seferinde)
-              const alarmStatus: Alarm = {
-                id: `alarm_${now}`,
-                type: 'manual',
-                message: parsedData.movement === 'idle' 
-                  ? 'ESP32\'den alarm sinyali alındı ve hareket yok!'
-                  : 'ESP32\'den alarm sinyali alındı!',
-                timestamp: now,
-                acknowledged: false,
-              };
-              setAlarms((prev) => {
-                // Aynı alarm'ı tekrar eklememek için kontrol et
-                const exists = prev.find(a => a.id === alarmStatus.id);
-                if (!exists) {
-                  return [alarmStatus, ...prev];
-                }
-                return prev;
-              });
             }
             
             // Alarm tespiti yap
@@ -761,19 +782,10 @@ export default function App() {
       }
     }
 
-    // 3. Hareketsizlik tespiti (timer ile kontrol edilecek)
-    if (data.movement === 'idle') {
-      const inactivityDuration = (now - lastActivityTime) / 1000 / 60; // dakika
-      if (inactivityDuration >= thresholds.inactivityMinutes) {
-        newAlarms.push({
-          id: `inactivity_${now}`,
-          type: 'inactivity',
-          message: `Uzun süre hareketsizlik tespit edildi: ${Math.round(inactivityDuration)} dakika`,
-          timestamp: now,
-          acknowledged: false,
-        });
-      }
-    } else if (data.movement === 'active') {
+    // 3. Hareketsizlik tespiti - Sadece ESP32'den alarm aktif ve hareket yok ise
+    // Hareketsizlik alarmı Bluetooth'tan (ESP32'den) gelecek, burada manuel tespit yapmıyoruz
+    // ESP32'den gelen verilerde isAlarm === true ve movement === 'idle' ise hareketsizlik alarmı oluşturulur
+    if (data.movement === 'active') {
       setLastActivityTime(now);
     }
 
@@ -1282,7 +1294,7 @@ export default function App() {
                     console.log('📢 DÜŞME BİLDİRİMİ GÖNDERİLİYOR (read ile)...');
                     sendNotification(
                       '🚨 DÜŞME TESPİT EDİLDİ',
-                      'ESP32\'den düşme sinyali alındı! Acil müdahale gerekebilir!'
+                      'Kullanıcı düşmüş olabilir, kontrol sağlayın!'
                     );
                     console.log('✅ DÜŞME BİLDİRİMİ GÖNDERİLDİ');
                   } else {
@@ -1310,20 +1322,43 @@ export default function App() {
                   console.log('🚨 ALARM TESPİT EDİLDİ (ESP32)');
                   const now = Date.now();
                   
-                  // Alarm + Hareket yoksa özel bildirim
+                  // Alarm + Hareket yoksa hareketsizlik alarmı oluştur
                   if (parsedData.movement === 'idle') {
-                    console.log('⚠️ ALARM + HAREKET YOK - Özel bildirim gönderiliyor (read ile)');
+                    console.log('⚠️ ALARM + HAREKET YOK - Hareketsizlik alarmı oluşturuluyor (read ile)');
+                    
+                    // Hareketsizlik alarmı oluştur
+                    const inactivityAlarm: Alarm = {
+                      id: `inactivity_${now}`,
+                      type: 'inactivity',
+                      message: 'ESP32\'den alarm sinyali alındı ve hareket tespit edilmedi!',
+                      timestamp: now,
+                      acknowledged: false,
+                    };
+                    
+                    setAlarms((prev) => {
+                      // Aynı alarm'ı tekrar eklememek için kontrol et (10 saniye içinde)
+                      const recentAlarm = prev.find(a => 
+                        a.type === 'inactivity' && 
+                        (now - a.timestamp) < 10000
+                      );
+                      if (!recentAlarm) {
+                        return [inactivityAlarm, ...prev];
+                      }
+                      return prev;
+                    });
+                    
+                    // Bildirim gönder
                     if (now - lastAlarmNotificationTime.current > 10000) {
                       lastAlarmNotificationTime.current = now;
-                      console.log('📢 ALARM + HAREKET YOK BİLDİRİMİ GÖNDERİLİYOR...');
+                      console.log('📢 HAREKETSİZLİK ALARM BİLDİRİMİ GÖNDERİLİYOR (read ile)...');
                       sendNotification(
-                        '🚨 ALARM + HAREKET YOK',
-                        'ESP32\'den alarm sinyali alındı ve hareket tespit edilmedi! Acil kontrol gerekebilir.'
+                        '🚨 HAREKETSİZLİK ALARM',
+                        'ESP32\'den alarm sinyali alındı ve hareket tespit edilmedi! Kontrol sağlayın.'
                       );
-                      console.log('✅ ALARM + HAREKET YOK BİLDİRİMİ GÖNDERİLDİ');
+                      console.log('✅ HAREKETSİZLİK ALARM BİLDİRİMİ GÖNDERİLDİ');
                     }
                   } else {
-                    // Normal alarm bildirimi
+                    // Normal alarm bildirimi (hareket var)
                     if (now - lastAlarmNotificationTime.current > 10000) {
                       lastAlarmNotificationTime.current = now;
                       console.log('📢 ALARM BİLDİRİMİ GÖNDERİLİYOR (read ile)...');
@@ -1335,26 +1370,24 @@ export default function App() {
                     } else {
                       console.log('⏳ ALARM bildirimi bekleniyor (10 saniye debounce)...');
                     }
+                    
+                    // Normal alarm durumu alarmı ekle
+                    const alarmStatus: Alarm = {
+                      id: `alarm_${now}`,
+                      type: 'manual',
+                      message: 'ESP32\'den alarm sinyali alındı!',
+                      timestamp: now,
+                      acknowledged: false,
+                    };
+                    setAlarms((prev) => {
+                      // Aynı alarm'ı tekrar eklememek için kontrol et
+                      const exists = prev.find(a => a.id === alarmStatus.id);
+                      if (!exists) {
+                        return [alarmStatus, ...prev];
+                      }
+                      return prev;
+                    });
                   }
-                  
-                  // Alarm durumu alarmı ekle (her seferinde)
-                  const alarmStatus: Alarm = {
-                    id: `alarm_${now}`,
-                    type: 'manual',
-                    message: parsedData.movement === 'idle' 
-                      ? 'ESP32\'den alarm sinyali alındı ve hareket yok!'
-                      : 'ESP32\'den alarm sinyali alındı!',
-                    timestamp: now,
-                    acknowledged: false,
-                  };
-                  setAlarms((prev) => {
-                    // Aynı alarm'ı tekrar eklememek için kontrol et
-                    const exists = prev.find(a => a.id === alarmStatus.id);
-                    if (!exists) {
-                      return [alarmStatus, ...prev];
-                    }
-                    return prev;
-                  });
                 }
                 
                 // Alarm tespiti yap
