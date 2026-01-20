@@ -105,7 +105,15 @@ export default function RemoteViewer({ onBack, thresholds, onThresholdsChange }:
     if (onThresholdsChange) {
       onThresholdsChange(tempThresholds);
       setShowThresholds(false);
-      Alert.alert('✅ Başarılı', 'Eşik değerleri güncellendi');
+      
+      // Eşik değerleri değiştiğinde alarm tespitini sıfırla
+      detectedAlarmIdsRef.current.clear();
+      lastActivityTimeRef.current = Date.now();
+      lastLowHeartRateNotificationRef.current = 0;
+      lastHighHeartRateNotificationRef.current = 0;
+      lastInactivityNotificationRef.current = 0;
+      
+      Alert.alert('✅ Başarılı', 'Eşik değerleri güncellendi. Yeni değerlere göre alarm tespiti başlatıldı.');
     } else {
       Alert.alert('⚠️ Uyarı', 'Eşik değerleri ayarlanamıyor (callback tanımlı değil)');
     }
@@ -114,6 +122,13 @@ export default function RemoteViewer({ onBack, thresholds, onThresholdsChange }:
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const previousAlarmIdsRef = useRef<Set<string>>(new Set());
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  
+  // Phone2 alarm tespiti için ref'ler
+  const lastActivityTimeRef = useRef<number>(Date.now());
+  const lastLowHeartRateNotificationRef = useRef<number>(0);
+  const lastHighHeartRateNotificationRef = useRef<number>(0);
+  const lastInactivityNotificationRef = useRef<number>(0);
+  const detectedAlarmIdsRef = useRef<Set<string>>(new Set()); // Phone2'de tespit edilen alarm ID'leri
 
   // Bildirim gönderme fonksiyonu
   const sendNotification = async (title: string, body: string) => {
@@ -141,6 +156,61 @@ export default function RemoteViewer({ onBack, thresholds, onThresholdsChange }:
     }
   };
 
+  // Phone2'de alarm tespit fonksiyonu (kendi eşik değerlerine göre)
+  const detectAlarmsPhone2 = (data: SensorData): Alarm[] => {
+    const newAlarms: Alarm[] = [];
+    const now = Date.now();
+    const thresholds = currentThresholds;
+
+    // 1. Anormal nabız tespiti (Phone2'nin eşik değerlerine göre)
+    if (data.heartRate !== null) {
+      if (data.heartRate < thresholds.minHeartRate) {
+        const alarmId = `phone2_low_hr_${Math.floor(now / 10000)}`; // 10 saniye debounce için
+        if (!detectedAlarmIdsRef.current.has(alarmId)) {
+          newAlarms.push({
+            id: alarmId,
+            type: 'low_heart_rate',
+            message: `[Phone2] Düşük nabız tespit edildi: ${data.heartRate} BPM (Eşik: ${thresholds.minHeartRate} BPM)`,
+            timestamp: now,
+            acknowledged: false,
+          });
+        }
+      } else if (data.heartRate > thresholds.maxHeartRate) {
+        const alarmId = `phone2_high_hr_${Math.floor(now / 10000)}`; // 10 saniye debounce için
+        if (!detectedAlarmIdsRef.current.has(alarmId)) {
+          newAlarms.push({
+            id: alarmId,
+            type: 'high_heart_rate',
+            message: `[Phone2] Yüksek nabız tespit edildi: ${data.heartRate} BPM (Eşik: ${thresholds.maxHeartRate} BPM)`,
+            timestamp: now,
+            acknowledged: false,
+          });
+        }
+      }
+    }
+
+    // 2. Hareketsizlik tespiti
+    if (data.movement === 'idle') {
+      const inactivityDuration = (now - lastActivityTimeRef.current) / 1000 / 60; // dakika
+      if (inactivityDuration >= thresholds.inactivityMinutes) {
+        const alarmId = `phone2_inactivity_${Math.floor(now / 60000)}`; // 1 dakika debounce için
+        if (!detectedAlarmIdsRef.current.has(alarmId)) {
+          newAlarms.push({
+            id: alarmId,
+            type: 'inactivity',
+            message: `[Phone2] Uzun süre hareketsizlik tespit edildi: ${Math.round(inactivityDuration)} dakika (Eşik: ${thresholds.inactivityMinutes} dakika)`,
+            timestamp: now,
+            acknowledged: false,
+          });
+        }
+      }
+    } else if (data.movement === 'active') {
+      lastActivityTimeRef.current = now;
+    }
+
+    return newAlarms;
+  };
+
   // Backend'den veri çekme
   const fetchData = async () => {
     if (!pollingActive) return;
@@ -159,6 +229,43 @@ export default function RemoteViewer({ onBack, thresholds, onThresholdsChange }:
         setSensorData(sensorResponse.data);
         setLastUpdate(sensorResponse.timestamp);
         setBackendConnected(true);
+
+        // Phone2'de kendi eşik değerlerine göre alarm tespiti yap
+        const phone2Alarms = detectAlarmsPhone2(sensorResponse.data);
+        if (phone2Alarms.length > 0) {
+          console.log('🚨 [Phone2] Eşik değerlerine göre alarm tespit edildi:', phone2Alarms);
+          
+          const now = Date.now();
+          
+          phone2Alarms.forEach((alarm) => {
+            // Alarm ID'sini kaydet (tekrar bildirim göndermemek için)
+            detectedAlarmIdsRef.current.add(alarm.id);
+            
+            // Debounce kontrolü ve bildirim gönder
+            if (alarm.type === 'low_heart_rate') {
+              if (now - lastLowHeartRateNotificationRef.current > 10000) { // 10 saniye debounce
+                sendNotification('🚨 [Phone2] Düşük Nabız', alarm.message);
+                lastLowHeartRateNotificationRef.current = now;
+              }
+            } else if (alarm.type === 'high_heart_rate') {
+              if (now - lastHighHeartRateNotificationRef.current > 10000) { // 10 saniye debounce
+                sendNotification('🚨 [Phone2] Yüksek Nabız', alarm.message);
+                lastHighHeartRateNotificationRef.current = now;
+              }
+            } else if (alarm.type === 'inactivity') {
+              if (now - lastInactivityNotificationRef.current > 60000) { // 1 dakika debounce
+                sendNotification('🚨 [Phone2] Hareketsizlik', alarm.message);
+                lastInactivityNotificationRef.current = now;
+              }
+            }
+            
+            // Alarmı state'e ekle
+            setAlarms((prev) => {
+              const combined = [alarm, ...prev];
+              return combined.slice(0, 50); // Son 50 alarmı tut
+            });
+          });
+        }
       } else {
         console.log('⚠️ Sensör verisi yok (henüz veri gönderilmemiş)');
         setBackendConnected(true); // Backend çalışıyor ama veri yok
