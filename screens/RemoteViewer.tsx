@@ -73,6 +73,15 @@ export default function RemoteViewer({ onBack, thresholds, onThresholdsChange }:
     }
   }, [thresholds]);
 
+  // tempThresholds değiştiğinde ref'i de güncelle ve alarm tespitini sıfırla
+  useEffect(() => {
+    // Ref'i güncelle (closure sorununu çözer)
+    tempThresholdsRef.current = tempThresholds;
+    // Eşik değerleri değiştiğinde önceki alarm ID'lerini temizle
+    detectedAlarmIdsRef.current.clear();
+    console.log('🔄 [Phone2] Eşik değerleri değişti, alarm tespiti sıfırlandı:', tempThresholds);
+  }, [tempThresholds.minHeartRate, tempThresholds.maxHeartRate, tempThresholds.inactivityMinutes]);
+
   // Bildirim izinlerini kontrol et ve iste
   useEffect(() => {
     const registerForNotifications = async () => {
@@ -129,6 +138,9 @@ export default function RemoteViewer({ onBack, thresholds, onThresholdsChange }:
   const lastHighHeartRateNotificationRef = useRef<number>(0);
   const lastInactivityNotificationRef = useRef<number>(0);
   const detectedAlarmIdsRef = useRef<Set<string>>(new Set()); // Phone2'de tespit edilen alarm ID'leri
+  
+  // tempThresholds'i ref ile de tutalım (closure sorununu çözmek için)
+  const tempThresholdsRef = useRef(tempThresholds);
 
   // Bildirim gönderme fonksiyonu
   const sendNotification = async (title: string, body: string) => {
@@ -160,7 +172,8 @@ export default function RemoteViewer({ onBack, thresholds, onThresholdsChange }:
   const detectAlarmsPhone2 = (data: SensorData): Alarm[] => {
     const newAlarms: Alarm[] = [];
     const now = Date.now();
-    const thresholds = currentThresholds;
+    // Ref'ten güncel değeri al (closure sorununu çözer)
+    const thresholds = tempThresholdsRef.current;
 
     // 1. Anormal nabız tespiti (Phone2'nin eşik değerlerine göre)
     if (data.heartRate !== null) {
@@ -231,6 +244,12 @@ export default function RemoteViewer({ onBack, thresholds, onThresholdsChange }:
         setBackendConnected(true);
 
         // Phone2'de kendi eşik değerlerine göre alarm tespiti yap
+        console.log('🔍 [Phone2] Alarm tespiti yapılıyor - Eşik değerleri:', {
+          minHeartRate: tempThresholdsRef.current.minHeartRate,
+          maxHeartRate: tempThresholdsRef.current.maxHeartRate,
+          inactivityMinutes: tempThresholdsRef.current.inactivityMinutes,
+          currentHeartRate: sensorResponse.data.heartRate
+        });
         const phone2Alarms = detectAlarmsPhone2(sensorResponse.data);
         if (phone2Alarms.length > 0) {
           console.log('🚨 [Phone2] Eşik değerlerine göre alarm tespit edildi:', phone2Alarms);
