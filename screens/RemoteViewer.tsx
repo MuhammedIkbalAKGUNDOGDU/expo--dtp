@@ -13,11 +13,23 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
+import * as DeviceInfo from 'expo-device';
 // Background task paketleri kaldırıldı (build hatası nedeniyle)
 // import * as TaskManager from 'expo-task-manager';
 // import * as BackgroundFetch from 'expo-background-fetch';
 import { getSensorDataFromBackend, getAlarmsFromBackend, SensorData, Alarm } from '../utils/api';
 import { API_BASE_URL } from '../config/api';
+
+// Bildirim handler'ı ayarla (component dışında)
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  }),
+});
 
 interface Thresholds {
   minHeartRate: number;
@@ -60,6 +72,34 @@ export default function RemoteViewer({ onBack, thresholds, onThresholdsChange }:
       setTempThresholds(thresholds);
     }
   }, [thresholds]);
+
+  // Bildirim izinlerini kontrol et ve iste
+  useEffect(() => {
+    const registerForNotifications = async () => {
+      if (!DeviceInfo.isDevice) {
+        console.log('⚠️ Bildirimler sadece fiziksel cihazlarda çalışır');
+        return;
+      }
+
+      const { status: existingStatus } = await Notifications.getPermissionsAsync();
+      let finalStatus = existingStatus;
+
+      if (existingStatus !== 'granted') {
+        console.log('📢 Bildirim izinleri isteniyor (Phone2)...');
+        const { status } = await Notifications.requestPermissionsAsync();
+        finalStatus = status;
+      }
+
+      if (finalStatus !== 'granted') {
+        console.warn('⚠️ Bildirim izinleri verilmedi (Phone2)');
+        Alert.alert('İzin Gerekli', 'Bildirim izinleri gerekli. Lütfen ayarlardan izin verin.');
+      } else {
+        console.log('✅ Bildirim izinleri verildi (Phone2)');
+      }
+    };
+
+    registerForNotifications();
+  }, []);
   
   const handleSaveThresholds = () => {
     if (onThresholdsChange) {
@@ -77,15 +117,28 @@ export default function RemoteViewer({ onBack, thresholds, onThresholdsChange }:
 
   // Bildirim gönderme fonksiyonu
   const sendNotification = async (title: string, body: string) => {
-    await Notifications.scheduleNotificationAsync({
-      content: {
-        title: title,
-        body: body,
-        sound: true,
-        priority: 'high',
-      },
-      trigger: null, // Hemen gönder
-    });
+    try {
+      console.log('📢 ========================================');
+      console.log('📢 === BİLDİRİM GÖNDERİLİYOR (Phone2) ===');
+      console.log('📢 ========================================');
+      console.log('📢 Başlık:', title);
+      console.log('📢 Mesaj:', body);
+      console.log('📢 ========================================');
+      
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: title,
+          body: body,
+          sound: true,
+          priority: 'high',
+        },
+        trigger: null, // Hemen gönder
+      });
+      
+      console.log('✅ Bildirim gönderildi (Phone2)');
+    } catch (error) {
+      console.error('❌ Bildirim gönderme hatası (Phone2):', error);
+    }
   };
 
   // Backend'den veri çekme
@@ -412,20 +465,7 @@ export default function RemoteViewer({ onBack, thresholds, onThresholdsChange }:
               </View>
 
               {/* Hareketsizlik Süresi */}
-              <View style={styles.thresholdItem}>
-                <Text style={styles.thresholdLabel}>Hareketsizlik Süresi (Dakika)</Text>
-                <TextInput
-                  style={styles.thresholdInput}
-                  value={tempThresholds.inactivityMinutes.toString()}
-                  onChangeText={(text) => {
-                    const value = parseInt(text) || 0;
-                    setTempThresholds({ ...tempThresholds, inactivityMinutes: value });
-                  }}
-                  keyboardType="numeric"
-                  placeholder="5"
-                />
-                <Text style={styles.thresholdHint}>Şu anki: {currentThresholds.inactivityMinutes} dakika</Text>
-              </View>
+              
 
               {/* Kaydet Butonu */}
               {onThresholdsChange && (
