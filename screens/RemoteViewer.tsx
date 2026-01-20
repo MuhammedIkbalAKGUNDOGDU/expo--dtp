@@ -9,6 +9,7 @@ import {
   Alert,
   AppState,
   AppStateStatus,
+  TextInput,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
@@ -18,11 +19,20 @@ import * as Notifications from 'expo-notifications';
 import { getSensorDataFromBackend, getAlarmsFromBackend, SensorData, Alarm } from '../utils/api';
 import { API_BASE_URL } from '../config/api';
 
-interface RemoteViewerProps {
-  onBack: () => void;
+interface Thresholds {
+  minHeartRate: number;
+  maxHeartRate: number;
+  inactivityMinutes: number;
+  fallThreshold: number;
 }
 
-export default function RemoteViewer({ onBack }: RemoteViewerProps) {
+interface RemoteViewerProps {
+  onBack: () => void;
+  thresholds?: Thresholds;
+  onThresholdsChange?: (thresholds: Thresholds) => void;
+}
+
+export default function RemoteViewer({ onBack, thresholds, onThresholdsChange }: RemoteViewerProps) {
   const [sensorData, setSensorData] = useState<SensorData | null>(null);
   const [alarms, setAlarms] = useState<Alarm[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -31,6 +41,35 @@ export default function RemoteViewer({ onBack }: RemoteViewerProps) {
   const [lastAlarmCheck, setLastAlarmCheck] = useState<number>(Date.now());
   const [backendConnected, setBackendConnected] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  
+  // Eşik değerleri için local state (varsayılan değerler)
+  const defaultThresholds: Thresholds = {
+    minHeartRate: 40,
+    maxHeartRate: 120,
+    inactivityMinutes: 5,
+    fallThreshold: 2.5,
+  };
+  
+  const currentThresholds = thresholds || defaultThresholds;
+  const [showThresholds, setShowThresholds] = useState(false);
+  const [tempThresholds, setTempThresholds] = useState(currentThresholds);
+  
+  // Thresholds değiştiğinde tempThresholds'i güncelle
+  useEffect(() => {
+    if (thresholds) {
+      setTempThresholds(thresholds);
+    }
+  }, [thresholds]);
+  
+  const handleSaveThresholds = () => {
+    if (onThresholdsChange) {
+      onThresholdsChange(tempThresholds);
+      setShowThresholds(false);
+      Alert.alert('✅ Başarılı', 'Eşik değerleri güncellendi');
+    } else {
+      Alert.alert('⚠️ Uyarı', 'Eşik değerleri ayarlanamıyor (callback tanımlı değil)');
+    }
+  };
   
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const previousAlarmIdsRef = useRef<Set<string>>(new Set());
@@ -303,6 +342,21 @@ export default function RemoteViewer({ onBack }: RemoteViewerProps) {
             <Text style={styles.timestampText}>
               Zaman: {new Date(sensorData.timestamp).toLocaleString()}
             </Text>
+            
+            {/* Nabız Durumu Badge */}
+            {sensorData.heartRate !== null && (
+              <View style={[
+                styles.statusBadge,
+                sensorData.heartRate < currentThresholds.minHeartRate || sensorData.heartRate > currentThresholds.maxHeartRate
+                  ? styles.statusBadgeWarning
+                  : styles.statusBadgeOk
+              ]}>
+                <Text style={styles.statusBadgeText}>
+                  {sensorData.heartRate < currentThresholds.minHeartRate ? '⚠️ Düşük' :
+                   sensorData.heartRate > currentThresholds.maxHeartRate ? '⚠️ Yüksek' : '✓ Normal'}
+                </Text>
+              </View>
+            )}
           </View>
         ) : (
           <View style={styles.emptyCard}>
@@ -312,6 +366,86 @@ export default function RemoteViewer({ onBack }: RemoteViewerProps) {
             </Text>
           </View>
         )}
+
+        {/* Eşik Değerleri Ayarlama */}
+        <View style={styles.settingsContainer}>
+          <TouchableOpacity 
+            style={styles.settingsHeader}
+            onPress={() => setShowThresholds(!showThresholds)}
+          >
+            <Text style={styles.settingsTitle}>⚙️ Eşik Değerleri</Text>
+            <Text style={styles.settingsToggle}>{showThresholds ? '▼' : '▶'}</Text>
+          </TouchableOpacity>
+          
+          {showThresholds && (
+            <View style={styles.thresholdsContent}>
+              {/* Minimum Nabız */}
+              <View style={styles.thresholdItem}>
+                <Text style={styles.thresholdLabel}>Minimum Nabız (BPM)</Text>
+                <TextInput
+                  style={styles.thresholdInput}
+                  value={tempThresholds.minHeartRate.toString()}
+                  onChangeText={(text) => {
+                    const value = parseInt(text) || 0;
+                    setTempThresholds({ ...tempThresholds, minHeartRate: value });
+                  }}
+                  keyboardType="numeric"
+                  placeholder="40"
+                />
+                <Text style={styles.thresholdHint}>Şu anki: {currentThresholds.minHeartRate} BPM</Text>
+              </View>
+
+              {/* Maksimum Nabız */}
+              <View style={styles.thresholdItem}>
+                <Text style={styles.thresholdLabel}>Maksimum Nabız (BPM)</Text>
+                <TextInput
+                  style={styles.thresholdInput}
+                  value={tempThresholds.maxHeartRate.toString()}
+                  onChangeText={(text) => {
+                    const value = parseInt(text) || 0;
+                    setTempThresholds({ ...tempThresholds, maxHeartRate: value });
+                  }}
+                  keyboardType="numeric"
+                  placeholder="120"
+                />
+                <Text style={styles.thresholdHint}>Şu anki: {currentThresholds.maxHeartRate} BPM</Text>
+              </View>
+
+              {/* Hareketsizlik Süresi */}
+              <View style={styles.thresholdItem}>
+                <Text style={styles.thresholdLabel}>Hareketsizlik Süresi (Dakika)</Text>
+                <TextInput
+                  style={styles.thresholdInput}
+                  value={tempThresholds.inactivityMinutes.toString()}
+                  onChangeText={(text) => {
+                    const value = parseInt(text) || 0;
+                    setTempThresholds({ ...tempThresholds, inactivityMinutes: value });
+                  }}
+                  keyboardType="numeric"
+                  placeholder="5"
+                />
+                <Text style={styles.thresholdHint}>Şu anki: {currentThresholds.inactivityMinutes} dakika</Text>
+              </View>
+
+              {/* Kaydet Butonu */}
+              {onThresholdsChange && (
+                <TouchableOpacity 
+                  style={styles.saveButton}
+                  onPress={handleSaveThresholds}
+                >
+                  <Text style={styles.saveButtonText}>💾 Kaydet</Text>
+                </TouchableOpacity>
+              )}
+              {!onThresholdsChange && (
+                <View style={styles.infoBox}>
+                  <Text style={styles.infoText}>
+                    ℹ️ Eşik değerleri sadece görüntüleniyor. Değiştirmek için phone1 moduna geçin.
+                  </Text>
+                </View>
+              )}
+            </View>
+          )}
+        </View>
 
         {/* Alarmlar */}
         <View style={styles.alarmsCard}>
@@ -562,6 +696,102 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#4CAF50',
     fontStyle: 'italic',
+  },
+  // Eşik değerleri ayarlama stilleri
+  settingsContainer: {
+    backgroundColor: '#fff',
+    marginHorizontal: 15,
+    marginBottom: 15,
+    borderRadius: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+    overflow: 'hidden',
+  },
+  settingsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    backgroundColor: '#f5f5f5',
+  },
+  settingsTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+  },
+  settingsToggle: {
+    fontSize: 16,
+    color: '#666',
+  },
+  thresholdsContent: {
+    padding: 20,
+  },
+  thresholdItem: {
+    marginBottom: 20,
+  },
+  thresholdLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 8,
+  },
+  thresholdInput: {
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 16,
+    backgroundColor: '#fff',
+  },
+  thresholdHint: {
+    fontSize: 12,
+    color: '#999',
+    marginTop: 5,
+  },
+  saveButton: {
+    backgroundColor: '#4CAF50',
+    padding: 15,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  saveButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  infoBox: {
+    backgroundColor: '#e3f2fd',
+    padding: 15,
+    borderRadius: 8,
+    marginTop: 10,
+  },
+  infoText: {
+    fontSize: 12,
+    color: '#1976d2',
+    textAlign: 'center',
+  },
+  // Status badge stilleri
+  statusBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+    marginTop: 10,
+    alignSelf: 'center',
+  },
+  statusBadgeOk: {
+    backgroundColor: '#4CAF50',
+  },
+  statusBadgeWarning: {
+    backgroundColor: '#FFC107',
+  },
+  statusBadgeText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
   },
 });
 

@@ -113,6 +113,7 @@ interface SensorData {
   battery: number | null;         // %
   isEmergency?: boolean;          // Acil durum (ESP32'den gelen "Acil" değeri)
   isAlarm?: boolean;               // Alarm durumu (ESP32'den gelen "Alarm" değeri)
+  isFall?: boolean;                // Düşme durumu (ESP32'den gelen "Dusme" değeri)
 }
 
 // Alarm tipleri
@@ -175,6 +176,9 @@ export default function App() {
   
   const devicesRef = useRef<BluetoothDevice[]>([]); // State güncellemesi için ref
   const lastSentTimestamp = useRef<number>(0); // Son gönderilen veri zamanı (debounce için)
+  const lastEmergencyNotificationTime = useRef<number>(0); // Son acil durum bildirimi zamanı
+  const lastAlarmNotificationTime = useRef<number>(0); // Son alarm bildirimi zamanı
+  const lastFallNotificationTime = useRef<number>(0); // Son düşme bildirimi zamanı
 
   useEffect(() => {
     // İzinleri kontrol et ve iste
@@ -336,6 +340,9 @@ export default function App() {
           movement: 'unknown',
           timestamp: Date.now(),
           battery: null,
+          isEmergency: false,
+          isAlarm: false,
+          isFall: false,
         });
         Alert.alert('Bilgi', 'Cihaz bağlantısı kesildi');
       }
@@ -380,37 +387,120 @@ export default function App() {
             // ESP32'den gelen Acil durumu kontrolü
             if (parsedData.isEmergency) {
               console.log('🚨 ACİL DURUM TESPİT EDİLDİ (ESP32)');
-              sendNotification(
-                '🚨 ACİL DURUM',
-                'ESP32\'den acil durum sinyali alındı! Hemen müdahale gerekebilir.'
-              );
-              // Acil durum alarmı ekle
+              const now = Date.now();
+              // Her 10 saniyede bir bildirim gönder (spam önlemek için)
+              if (now - lastEmergencyNotificationTime.current > 10000) {
+                lastEmergencyNotificationTime.current = now;
+                console.log('📢 ACİL DURUM BİLDİRİMİ GÖNDERİLİYOR...');
+                sendNotification(
+                  '🚨 ACİL DURUM',
+                  'ESP32\'den acil durum sinyali alındı! Hemen müdahale gerekebilir.'
+                );
+                console.log('✅ ACİL DURUM BİLDİRİMİ GÖNDERİLDİ');
+              } else {
+                console.log('⏳ ACİL DURUM bildirimi bekleniyor (10 saniye debounce)...');
+              }
+              // Acil durum alarmı ekle (her seferinde)
               const emergencyAlarm: Alarm = {
-                id: `emergency_${Date.now()}`,
+                id: `emergency_${now}`,
                 type: 'manual',
                 message: 'ESP32\'den acil durum sinyali alındı!',
-                timestamp: Date.now(),
+                timestamp: now,
                 acknowledged: false,
               };
-              setAlarms((prev) => [emergencyAlarm, ...prev]);
+              setAlarms((prev) => {
+                // Aynı alarm'ı tekrar eklememek için kontrol et
+                const exists = prev.find(a => a.id === emergencyAlarm.id);
+                if (!exists) {
+                  return [emergencyAlarm, ...prev];
+                }
+                return prev;
+              });
+            }
+            
+            // ESP32'den gelen Düşme durumu kontrolü
+            if (parsedData.isFall) {
+              console.log('🚨 DÜŞME TESPİT EDİLDİ (ESP32)');
+              const now = Date.now();
+              // Her 10 saniyede bir bildirim gönder (spam önlemek için)
+              if (now - lastFallNotificationTime.current > 10000) {
+                lastFallNotificationTime.current = now;
+                console.log('📢 DÜŞME BİLDİRİMİ GÖNDERİLİYOR...');
+                sendNotification(
+                  '🚨 DÜŞME TESPİT EDİLDİ',
+                  'ESP32\'den düşme sinyali alındı! Acil müdahale gerekebilir!'
+                );
+                console.log('✅ DÜŞME BİLDİRİMİ GÖNDERİLDİ');
+              } else {
+                console.log('⏳ DÜŞME bildirimi bekleniyor (10 saniye debounce)...');
+              }
+              // Düşme alarmı ekle
+              const fallAlarm: Alarm = {
+                id: `fall_${now}`,
+                type: 'fall',
+                message: 'ESP32\'den düşme sinyali alındı! Acil müdahale gerekebilir.',
+                timestamp: now,
+                acknowledged: false,
+              };
+              setAlarms((prev) => {
+                const exists = prev.find(a => a.id === fallAlarm.id);
+                if (!exists) {
+                  return [fallAlarm, ...prev];
+                }
+                return prev;
+              });
             }
             
             // ESP32'den gelen Alarm durumu kontrolü
             if (parsedData.isAlarm) {
               console.log('🚨 ALARM TESPİT EDİLDİ (ESP32)');
-              sendNotification(
-                '🚨 ALARM AKTİF',
-                'ESP32\'den alarm sinyali alındı! Durumu kontrol edin.'
-              );
-              // Alarm durumu alarmı ekle
+              const now = Date.now();
+              
+              // Alarm + Hareket yoksa özel bildirim
+              if (parsedData.movement === 'idle') {
+                console.log('⚠️ ALARM + HAREKET YOK - Özel bildirim gönderiliyor');
+                if (now - lastAlarmNotificationTime.current > 10000) {
+                  lastAlarmNotificationTime.current = now;
+                  console.log('📢 ALARM + HAREKET YOK BİLDİRİMİ GÖNDERİLİYOR...');
+                  sendNotification(
+                    '🚨 ALARM + HAREKET YOK',
+                    'ESP32\'den alarm sinyali alındı ve hareket tespit edilmedi! Acil kontrol gerekebilir.'
+                  );
+                  console.log('✅ ALARM + HAREKET YOK BİLDİRİMİ GÖNDERİLDİ');
+                }
+              } else {
+                // Normal alarm bildirimi
+                if (now - lastAlarmNotificationTime.current > 10000) {
+                  lastAlarmNotificationTime.current = now;
+                  console.log('📢 ALARM BİLDİRİMİ GÖNDERİLİYOR...');
+                  sendNotification(
+                    '🚨 ALARM AKTİF',
+                    'ESP32\'den alarm sinyali alındı! Durumu kontrol edin.'
+                  );
+                  console.log('✅ ALARM BİLDİRİMİ GÖNDERİLDİ');
+                } else {
+                  console.log('⏳ ALARM bildirimi bekleniyor (10 saniye debounce)...');
+                }
+              }
+              
+              // Alarm durumu alarmı ekle (her seferinde)
               const alarmStatus: Alarm = {
-                id: `alarm_${Date.now()}`,
+                id: `alarm_${now}`,
                 type: 'manual',
-                message: 'ESP32\'den alarm sinyali alındı!',
-                timestamp: Date.now(),
+                message: parsedData.movement === 'idle' 
+                  ? 'ESP32\'den alarm sinyali alındı ve hareket yok!'
+                  : 'ESP32\'den alarm sinyali alındı!',
+                timestamp: now,
                 acknowledged: false,
               };
-              setAlarms((prev) => [alarmStatus, ...prev]);
+              setAlarms((prev) => {
+                // Aynı alarm'ı tekrar eklememek için kontrol et
+                const exists = prev.find(a => a.id === alarmStatus.id);
+                if (!exists) {
+                  return [alarmStatus, ...prev];
+                }
+                return prev;
+              });
             }
             
             // Alarm tespiti yap
@@ -600,7 +690,8 @@ export default function App() {
         }
         
         // Düşme kontrolü
-        if (parts['Dusme'] && parts['Dusme'].toUpperCase() === 'EVET') {
+        const isFall = !!(parts['Dusme'] && parts['Dusme'].toUpperCase() === 'EVET');
+        if (isFall) {
           movement = 'fall';
         }
         
@@ -620,6 +711,7 @@ export default function App() {
           battery: null,
           isEmergency,
           isAlarm,
+          isFall,
         };
       }
       
@@ -643,22 +735,12 @@ export default function App() {
   };
 
   // Alarm tespit fonksiyonu
+  // NOT: Düşme tespiti ESP32'den zaten geliyor (isAlarm/isEmergency), burada yapmıyoruz
   const detectAlarms = (data: SensorData): Alarm[] => {
     const newAlarms: Alarm[] = [];
     const now = Date.now();
 
-    // 1. Düşme tespiti
-    if (data.movement === 'fall') {
-      newAlarms.push({
-        id: `fall_${now}`,
-        type: 'fall',
-        message: 'Düşme tespit edildi! Acil müdahale gerekebilir.',
-        timestamp: now,
-        acknowledged: false,
-      });
-    }
-
-    // 2. Anormal nabız tespiti
+    // 1. Anormal nabız tespiti
     if (data.heartRate !== null) {
       if (data.heartRate < thresholds.minHeartRate) {
         newAlarms.push({
@@ -1159,37 +1241,120 @@ export default function App() {
                 // ESP32'den gelen Acil durumu kontrolü
                 if (parsedData.isEmergency) {
                   console.log('🚨 ACİL DURUM TESPİT EDİLDİ (ESP32)');
-                  sendNotification(
-                    '🚨 ACİL DURUM',
-                    'ESP32\'den acil durum sinyali alındı! Hemen müdahale gerekebilir.'
-                  );
-                  // Acil durum alarmı ekle
+                  const now = Date.now();
+                  // Her 10 saniyede bir bildirim gönder (spam önlemek için)
+                  if (now - lastEmergencyNotificationTime.current > 10000) {
+                    lastEmergencyNotificationTime.current = now;
+                    console.log('📢 ACİL DURUM BİLDİRİMİ GÖNDERİLİYOR (read ile)...');
+                    sendNotification(
+                      '🚨 ACİL DURUM',
+                      'ESP32\'den acil durum sinyali alındı! Hemen müdahale gerekebilir.'
+                    );
+                    console.log('✅ ACİL DURUM BİLDİRİMİ GÖNDERİLDİ');
+                  } else {
+                    console.log('⏳ ACİL DURUM bildirimi bekleniyor (10 saniye debounce)...');
+                  }
+                  // Acil durum alarmı ekle (her seferinde)
                   const emergencyAlarm: Alarm = {
-                    id: `emergency_${Date.now()}`,
+                    id: `emergency_${now}`,
                     type: 'manual',
                     message: 'ESP32\'den acil durum sinyali alındı!',
-                    timestamp: Date.now(),
+                    timestamp: now,
                     acknowledged: false,
                   };
-                  setAlarms((prev) => [emergencyAlarm, ...prev]);
+                  setAlarms((prev) => {
+                    // Aynı alarm'ı tekrar eklememek için kontrol et
+                    const exists = prev.find(a => a.id === emergencyAlarm.id);
+                    if (!exists) {
+                      return [emergencyAlarm, ...prev];
+                    }
+                    return prev;
+                  });
+                }
+                
+                // ESP32'den gelen Düşme durumu kontrolü
+                if (parsedData.isFall) {
+                  console.log('🚨 DÜŞME TESPİT EDİLDİ (ESP32)');
+                  const now = Date.now();
+                  // Her 10 saniyede bir bildirim gönder (spam önlemek için)
+                  if (now - lastFallNotificationTime.current > 10000) {
+                    lastFallNotificationTime.current = now;
+                    console.log('📢 DÜŞME BİLDİRİMİ GÖNDERİLİYOR (read ile)...');
+                    sendNotification(
+                      '🚨 DÜŞME TESPİT EDİLDİ',
+                      'ESP32\'den düşme sinyali alındı! Acil müdahale gerekebilir!'
+                    );
+                    console.log('✅ DÜŞME BİLDİRİMİ GÖNDERİLDİ');
+                  } else {
+                    console.log('⏳ DÜŞME bildirimi bekleniyor (10 saniye debounce)...');
+                  }
+                  // Düşme alarmı ekle
+                  const fallAlarm: Alarm = {
+                    id: `fall_${now}`,
+                    type: 'fall',
+                    message: 'ESP32\'den düşme sinyali alındı! Acil müdahale gerekebilir.',
+                    timestamp: now,
+                    acknowledged: false,
+                  };
+                  setAlarms((prev) => {
+                    const exists = prev.find(a => a.id === fallAlarm.id);
+                    if (!exists) {
+                      return [fallAlarm, ...prev];
+                    }
+                    return prev;
+                  });
                 }
                 
                 // ESP32'den gelen Alarm durumu kontrolü
                 if (parsedData.isAlarm) {
                   console.log('🚨 ALARM TESPİT EDİLDİ (ESP32)');
-                  sendNotification(
-                    '🚨 ALARM AKTİF',
-                    'ESP32\'den alarm sinyali alındı! Durumu kontrol edin.'
-                  );
-                  // Alarm durumu alarmı ekle
+                  const now = Date.now();
+                  
+                  // Alarm + Hareket yoksa özel bildirim
+                  if (parsedData.movement === 'idle') {
+                    console.log('⚠️ ALARM + HAREKET YOK - Özel bildirim gönderiliyor (read ile)');
+                    if (now - lastAlarmNotificationTime.current > 10000) {
+                      lastAlarmNotificationTime.current = now;
+                      console.log('📢 ALARM + HAREKET YOK BİLDİRİMİ GÖNDERİLİYOR...');
+                      sendNotification(
+                        '🚨 ALARM + HAREKET YOK',
+                        'ESP32\'den alarm sinyali alındı ve hareket tespit edilmedi! Acil kontrol gerekebilir.'
+                      );
+                      console.log('✅ ALARM + HAREKET YOK BİLDİRİMİ GÖNDERİLDİ');
+                    }
+                  } else {
+                    // Normal alarm bildirimi
+                    if (now - lastAlarmNotificationTime.current > 10000) {
+                      lastAlarmNotificationTime.current = now;
+                      console.log('📢 ALARM BİLDİRİMİ GÖNDERİLİYOR (read ile)...');
+                      sendNotification(
+                        '🚨 ALARM AKTİF',
+                        'ESP32\'den alarm sinyali alındı! Durumu kontrol edin.'
+                      );
+                      console.log('✅ ALARM BİLDİRİMİ GÖNDERİLDİ');
+                    } else {
+                      console.log('⏳ ALARM bildirimi bekleniyor (10 saniye debounce)...');
+                    }
+                  }
+                  
+                  // Alarm durumu alarmı ekle (her seferinde)
                   const alarmStatus: Alarm = {
-                    id: `alarm_${Date.now()}`,
+                    id: `alarm_${now}`,
                     type: 'manual',
-                    message: 'ESP32\'den alarm sinyali alındı!',
-                    timestamp: Date.now(),
+                    message: parsedData.movement === 'idle' 
+                      ? 'ESP32\'den alarm sinyali alındı ve hareket yok!'
+                      : 'ESP32\'den alarm sinyali alındı!',
+                    timestamp: now,
                     acknowledged: false,
                   };
-                  setAlarms((prev) => [alarmStatus, ...prev]);
+                  setAlarms((prev) => {
+                    // Aynı alarm'ı tekrar eklememek için kontrol et
+                    const exists = prev.find(a => a.id === alarmStatus.id);
+                    if (!exists) {
+                      return [alarmStatus, ...prev];
+                    }
+                    return prev;
+                  });
                 }
                 
                 // Alarm tespiti yap
@@ -1410,6 +1575,8 @@ export default function App() {
           // phone2 modunda geri butonu phone1'e geçer
           setPhoneMode('phone1');
         }}
+        thresholds={thresholds}
+        onThresholdsChange={setThresholds}
       />
     );
   }
